@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="PmsWindow" parent="AdwApplicationWindow">
+    <property name="title">PipeWire Media Stream for GTK4</property>
+    <property name="default-width">800</property>
+    <property name="default-height">600</property>
+
+    <child>
+      <object class="GtkStack" id="stack">
+
+        <!-- Start page -->
+        <child>
+          <object class="GtkStackPage">
+            <property name="name">start</property>
+            <property name="child">
+              <object class="GtkButton" id="start_screencast_button">
+                <property name="halign">center</property>
+                <property name="valign">center</property>
+                <signal name="clicked" handler="on_start_screencast_button_clicked_cb" object="PmsWindow" swapped="no" />
+
+                <child>
+                  <object class="GtkBox">
+                    <property name="spacing">12</property>
+
+                    <child>
+                      <object class="GtkImage">
+                        <property name="icon-name">media-record-symbolic</property>
+                      </object>
+                    </child>
+
+                    <child>
+                      <object class="GtkLabel">
+                        <property name="label">Start Recording</property>
+                      </object>
+                    </child>
+
+                  </object>
+                </child>
+
+              </object>
+            </property>
+          </object>
+        </child>
+
+        <!-- Video page -->
+        <child>
+          <object class="GtkStackPage" id="video_page">
+            <property name="name">video</property>
+            <property name="child">
+              <object class="GtkVideo" id="video">
+                <property name="autoplay">true</property>
+              </object>
+            </property>
+          </object>
+        </child>
+
+      </object>
+    </child>
+
+  </template>
+</interface>
