@@ -318,6 +318,8 @@ read_metadata:
           bitmap_data = SPA_MEMBER (bitmap, bitmap->offset, uint8_t);
           self->cursor.width = bitmap->size.width;
           self->cursor.height = bitmap->size.height;
+          self->cursor.hotspot_x = cursor->hotspot.x;
+          self->cursor.hotspot_y = cursor->hotspot.y;
 
           bytes = g_bytes_new (bitmap_data,
                                bitmap->size.width * bitmap->size.height * bpp);
@@ -330,13 +332,9 @@ read_metadata:
           g_set_object (&self->cursor.paintable, GDK_PAINTABLE (texture));
         }
 
-      invalidated |= self->cursor.hotspot_x != cursor->hotspot.x ||
-                     self->cursor.hotspot_y != cursor->hotspot.y ||
-                     self->cursor.x != cursor->position.x ||
+      invalidated |= self->cursor.x != cursor->position.x ||
                      self->cursor.y != cursor->position.y;
 
-      self->cursor.hotspot_x = cursor->hotspot.x;
-      self->cursor.hotspot_y = cursor->hotspot.y;
       self->cursor.x = cursor->position.x;
       self->cursor.y = cursor->position.y;
 
