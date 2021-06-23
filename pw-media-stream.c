@@ -330,6 +330,8 @@ read_metadata:
                                             bytes,
                                             bitmap->stride);
           g_set_object (&self->cursor.paintable, GDK_PAINTABLE (texture));
+
+          invalidated = TRUE;
         }
 
       invalidated |= self->cursor.x != cursor->position.x ||
