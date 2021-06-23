@@ -340,11 +340,13 @@ read_metadata:
       self->cursor.x = cursor->position.x;
       self->cursor.y = cursor->position.y;
 
-      g_debug ("Stream has cursor %.0lfx%.0lf +%.0lf+%.0lf",
+      g_debug ("Stream has cursor %.0lfx%.0lf +%.0lf+%.0lf (hotspot: %.0lfx%.0lf)",
                self->cursor.x,
                self->cursor.y,
                self->cursor.width,
-               self->cursor.height);
+               self->cursor.height,
+               self->cursor.hotspot_x,
+               self->cursor.hotspot_y);
     }
 
   header = spa_buffer_find_meta_data (buffer, SPA_META_Header, sizeof (*header));
