@@ -40,6 +40,9 @@ struct _PwMediaStream
   struct pw_core *core;
   struct spa_hook core_listener;
 
+  GList *nodes_list;
+  struct spa_hook registry_listener;
+
   struct pw_stream *stream;
   struct spa_hook stream_listener;
   struct spa_video_info format;
@@ -471,10 +474,126 @@ on_core_error_cb (void       *user_data,
                           message);
 }
 
+static void
+on_core_done_cb (void     *user_data,
+                 uint32_t  id,
+                 int       seq)
+{
+  PwMediaStream *self = user_data;
+
+  g_message ("Core done");
+  if (self->node_id == 0 && id == PW_ID_CORE)
+    {
+      g_message ("Core done, %d objects", g_list_length (self->nodes_list));
+    }
+}
+
 static const struct pw_core_events core_events = {
   PW_VERSION_CORE_EVENTS,
+  .done = on_core_done_cb,
   .error = on_core_error_cb,
 };
+
+static gboolean
+connect_stream (PwMediaStream  *self,
+                uint32_t        node_id,
+                GError        **error)
+{
+  struct spa_pod_builder pod_builder;
+  const struct spa_pod *params[1];
+  uint8_t params_buffer[1024];
+  int result;
+
+  /* Stream */
+  self->stream = pw_stream_new (self->core,
+                                "PwMediaStream",
+                                pw_properties_new (PW_KEY_MEDIA_TYPE, "Video",
+                                                   PW_KEY_MEDIA_CATEGORY, "Capture",
+                                                   PW_KEY_MEDIA_ROLE, "Screen",
+                                                   NULL));
+
+  pw_stream_add_listener (self->stream,
+                          &self->stream_listener,
+                          &stream_events,
+                          self);
+
+  pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
+  params[0] = spa_pod_builder_add_object (
+    &pod_builder,
+    SPA_TYPE_OBJECT_Format,
+    SPA_PARAM_EnumFormat,
+    SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video),
+    SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw),
+    SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id (4,
+                                                     SPA_VIDEO_FORMAT_BGRA,
+                                                     SPA_VIDEO_FORMAT_RGBA,
+                                                     SPA_VIDEO_FORMAT_BGRx,
+                                                     SPA_VIDEO_FORMAT_RGBx),
+    SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
+                                                           &SPA_RECTANGLE(1, 1),
+                                                           &SPA_RECTANGLE(8192, 4320)));
+  if (!self->stream)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Couldn't connect PipeWire stream");
+      return FALSE;
+    }
+
+  result = pw_stream_connect (self->stream,
+                              PW_DIRECTION_INPUT,
+                              node_id,
+                              PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+                              params, 1);
+
+  if (result != 0)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Could not connect: %s", spa_strerror (result));
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+static void
+on_registry_event_global (void                  *data,
+                          uint32_t               node_id,
+                          uint32_t               permissions,
+                          const char            *type,
+                          uint32_t               version,
+                          const struct spa_dict *props)
+{
+  g_message ("Global event (%s)", type);
+}
+
+static void
+on_registry_event_global_remove (void     *object,
+                                 uint32_t  id)
+{
+}
+
+static const struct pw_registry_events registry_events = {
+  PW_VERSION_REGISTRY_EVENTS,
+  .global = on_registry_event_global,
+  .global_remove = on_registry_event_global_remove,
+};
+
+static gboolean
+select_node (PwMediaStream  *self,
+             GError        **error)
+{
+  struct pw_registry *registry;
+
+  g_message ("Selecting node");
+
+  registry = pw_core_get_registry (self->core, PW_VERSION_REGISTRY, 0);
+  pw_registry_add_listener (registry,
+                            &self->registry_listener,
+                            &registry_events,
+                            self);
+
+  return TRUE;
+}
 
 
 /*
@@ -701,10 +820,6 @@ pw_media_stream_initable_init (GInitable     *initable,
                                GError       **error)
 {
   PwMediaStream *self = PW_MEDIA_STREAM (initable);
-  struct spa_pod_builder pod_builder;
-  const struct spa_pod *params[1];
-  uint8_t params_buffer[1024];
-  int result;
 
   self->source = create_pipewire_source (self);
   if (!self->source)
@@ -738,55 +853,10 @@ pw_media_stream_initable_init (GInitable     *initable,
                         &core_events,
                         self);
 
-  /* Stream */
-  self->stream = pw_stream_new (self->core,
-                                "PwMediaStream",
-                                pw_properties_new (PW_KEY_MEDIA_TYPE, "Video",
-                                                   PW_KEY_MEDIA_CATEGORY, "Capture",
-                                                   PW_KEY_MEDIA_ROLE, "Screen",
-                                                   NULL));
-
-  pw_stream_add_listener (self->stream,
-                          &self->stream_listener,
-                          &stream_events,
-                          self);
-
-  pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
-  params[0] = spa_pod_builder_add_object (
-    &pod_builder,
-    SPA_TYPE_OBJECT_Format,
-    SPA_PARAM_EnumFormat,
-    SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video),
-    SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw),
-    SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id (4,
-                                                     SPA_VIDEO_FORMAT_BGRA,
-                                                     SPA_VIDEO_FORMAT_RGBA,
-                                                     SPA_VIDEO_FORMAT_BGRx,
-                                                     SPA_VIDEO_FORMAT_RGBx),
-    SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
-                                                           &SPA_RECTANGLE(1, 1),
-                                                           &SPA_RECTANGLE(8192, 4320)));
-  if (!self->stream)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Couldn't connect PipeWire stream");
-      return FALSE;
-    }
-
-  result = pw_stream_connect (self->stream,
-                              PW_DIRECTION_INPUT,
-                              self->node_id,
-                              PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
-                              params, 1);
-
-  if (result != 0)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Could not connect: %s", spa_strerror (result));
-      return FALSE;
-    }
-
-  return TRUE;
+  if (self->node_id != 0)
+    return connect_stream (self, self->node_id, error);
+  else
+    return select_node (self, error);
 }
 
 static void

@@ -4,6 +4,11 @@
 
 G_BEGIN_DECLS
 
+typedef struct
+{
+  uint32_t node_id;
+} PwMediaStreamNode;
+
 #define PW_TYPE_MEDIA_STREAM (pw_media_stream_get_type())
 G_DECLARE_FINAL_TYPE (PwMediaStream, pw_media_stream, PW, MEDIA_STREAM, GtkMediaStream)
 
