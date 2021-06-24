@@ -13,24 +13,64 @@
           <object class="GtkStackPage">
             <property name="name">start</property>
             <property name="child">
-              <object class="GtkButton" id="start_screencast_button">
-                <property name="halign">center</property>
+              <object class="GtkBox">
+                <property name="orientation">vertical</property>
                 <property name="valign">center</property>
-                <signal name="clicked" handler="on_start_screencast_button_clicked_cb" object="PmsWindow" swapped="no" />
+                <property name="spacing">18</property>
 
+                <!-- Start Screencast button -->
                 <child>
-                  <object class="GtkBox">
-                    <property name="spacing">12</property>
+                  <object class="GtkButton" id="start_screencast_button">
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <signal name="clicked" handler="on_start_screencast_button_clicked_cb" object="PmsWindow" swapped="no" />
 
                     <child>
-                      <object class="GtkImage">
-                        <property name="icon-name">media-record-symbolic</property>
+                      <object class="GtkBox">
+                        <property name="spacing">12</property>
+
+                        <child>
+                          <object class="GtkImage">
+                            <property name="icon-name">media-record-symbolic</property>
+                          </object>
+                        </child>
+
+                        <child>
+                          <object class="GtkLabel">
+                            <property name="label">Start Recording</property>
+                          </object>
+                        </child>
+
                       </object>
                     </child>
 
+                  </object>
+                </child>
+
+
+                <!-- Select Webcam button -->
+                <child>
+                  <object class="GtkButton" id="select_webcam_button">
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <signal name="clicked" handler="on_select_webcam_button_clicked_cb" object="PmsWindow" swapped="no" />
+
                     <child>
-                      <object class="GtkLabel">
-                        <property name="label">Start Recording</property>
+                      <object class="GtkBox">
+                        <property name="spacing">12</property>
+
+                        <child>
+                          <object class="GtkImage">
+                            <property name="icon-name">camera-web-symbolic</property>
+                          </object>
+                        </child>
+
+                        <child>
+                          <object class="GtkLabel">
+                            <property name="label">Select Webcam</property>
+                          </object>
+                        </child>
+
                       </object>
                     </child>
 

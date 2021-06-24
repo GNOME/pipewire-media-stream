@@ -19,6 +19,61 @@ struct _PmsWindow
 
 G_DEFINE_TYPE (PmsWindow, pms_window, ADW_TYPE_APPLICATION_WINDOW)
 
+static uint32_t
+on_media_stream_select_node_cb (PwMediaStream *media_stream,
+                                GList         *nodes,
+                                PmsWindow     *window)
+{
+  return ;
+}
+
+static void
+on_camera_accessed (GObject      *source,
+                    GAsyncResult *result,
+                    gpointer      user_data)
+{
+  g_autoptr (GtkMediaStream) media_stream = NULL;
+  g_autoptr (GError) error = NULL;
+  PmsWindow *self;
+  int fd;
+
+  xdp_portal_access_camera_finish (XDP_PORTAL (source), result, &error);
+  if (error)
+    {
+      g_warning ("Error creating screencast session: %s", error->message);
+      return;
+    }
+
+  self = PMS_WINDOW (user_data);
+  fd = xdp_portal_open_pipewire_remote_for_camera (self->portal);
+
+  media_stream = pw_media_stream_new (fd, 0, &error);
+  g_object_ref (media_stream);
+  g_signal_connect_object (media_stream,
+                           "select-node",
+                           G_CALLBACK (on_media_stream_select_node_cb),
+                           self,
+                           0);
+  gtk_video_set_media_stream (self->video, media_stream);
+}
+
+static void
+on_select_webcam_button_clicked_cb (GtkButton *button,
+                                    PmsWindow *self)
+{
+  XdpParent *parent;
+
+  parent = xdp_parent_new_gtk (GTK_WINDOW (self));
+
+  xdp_portal_access_camera (self->portal,
+                            parent,
+                            XDP_CAMERA_FLAG_NONE,
+                            self->cancellable,
+                            on_camera_accessed,
+                            self);
+  xdp_parent_free (parent);
+}
+
 static void
 on_session_closed_cb (XdpSession *session,
                       PmsWindow  *self)
@@ -145,6 +200,7 @@ pms_window_class_init (PmsWindowClass *klass)
   gtk_widget_class_set_template_from_resource (widget_class, "/com/feaneron/example/PipeWireMediaStream/window.ui");
   gtk_widget_class_bind_template_child (widget_class, PmsWindow, stack);
   gtk_widget_class_bind_template_child (widget_class, PmsWindow, video);
+  gtk_widget_class_bind_template_callback (widget_class, on_select_webcam_button_clicked_cb);
   gtk_widget_class_bind_template_callback (widget_class, on_start_screencast_button_clicked_cb);
 }
 
