@@ -84,7 +84,8 @@
             "sources" : [
                 {
                     "type" : "git",
-                    "url" : "file:///home/feaneron/Documentos/Projetos/pipewire-media-stream"
+                    "url" : "https://gitlab.gnome.org/feaneron/pipewire-media-session.git",
+                    "branch" : "main"
                 }
             ]
         }
