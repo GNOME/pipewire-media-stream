@@ -6,8 +6,10 @@
     "command" : "pipewire-media-stream",
     "finish-args" : [
         "--device=dri",
+        "--filesystem=xdg-run/pipewire-0",
         "--share=network",
         "--share=ipc",
+        "--socket=fallback-x11",
         "--socket=fallback-x11",
         "--socket=wayland"
     ],

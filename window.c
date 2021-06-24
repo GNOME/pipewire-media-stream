@@ -4,6 +4,7 @@
 
 #include <libportal/portal.h>
 #include <libportal/portal-gtk4.h>
+#include <pipewire/pipewire.h>
 
 struct _PmsWindow
 {
@@ -22,9 +23,18 @@ G_DEFINE_TYPE (PmsWindow, pms_window, ADW_TYPE_APPLICATION_WINDOW)
 static uint32_t
 on_media_stream_select_node_cb (PwMediaStream *media_stream,
                                 GList         *nodes,
-                                PmsWindow     *window)
+                                PmsWindow     *self)
 {
-  return ;
+  PwMediaStreamNode *node;
+
+  if (!nodes)
+    return PW_ID_ANY;
+
+  node = nodes->data;
+  gtk_stack_set_visible_child_name (self->stack, "video");
+  g_message ("Selecting first node: %u", node->node_id);
+
+  return node->node_id;
 }
 
 static void
@@ -47,13 +57,11 @@ on_camera_accessed (GObject      *source,
   self = PMS_WINDOW (user_data);
   fd = xdp_portal_open_pipewire_remote_for_camera (self->portal);
 
-  media_stream = pw_media_stream_new (fd, 0, &error);
-  g_object_ref (media_stream);
-  g_signal_connect_object (media_stream,
-                           "select-node",
-                           G_CALLBACK (on_media_stream_select_node_cb),
-                           self,
-                           0);
+  media_stream = pw_media_stream_new (fd, PW_ID_ANY, &error);
+  g_signal_connect (media_stream,
+                    "select-node",
+                    G_CALLBACK (on_media_stream_select_node_cb),
+                    self);
   gtk_video_set_media_stream (self->video, media_stream);
 }
 

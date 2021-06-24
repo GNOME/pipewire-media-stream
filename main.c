@@ -32,6 +32,8 @@ main (int   argc,
 {
 	g_autoptr(GtkApplication) app = NULL;
 
+  g_setenv ("G_MESSAGES_DEBUG", "all", TRUE);
+
   pw_init (&argc, &argv);
 
 	app = gtk_application_new ("com.feaneron.example.PipeWireMediaStream", G_APPLICATION_FLAGS_NONE);

@@ -7,6 +7,7 @@ G_BEGIN_DECLS
 typedef struct
 {
   uint32_t node_id;
+  char *description;
 } PwMediaStreamNode;
 
 #define PW_TYPE_MEDIA_STREAM (pw_media_stream_get_type())

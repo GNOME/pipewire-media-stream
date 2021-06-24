@@ -21,7 +21,6 @@ typedef struct
   GSource base;
 
   PwMediaStream *media_stream;
-  struct pw_loop *pipewire_loop;
 } PipeWireSource;
 
 struct _PwMediaStream
@@ -40,8 +39,10 @@ struct _PwMediaStream
   struct pw_core *core;
   struct spa_hook core_listener;
 
-  GList *nodes_list;
+  struct pw_main_loop *mainloop;
   struct spa_hook registry_listener;
+  GHashTable *nodes;
+  int sync_seq;
 
   struct pw_stream *stream;
   struct spa_hook stream_listener;
@@ -70,6 +71,13 @@ enum
   N_PROPS
 };
 
+enum
+{
+  SELECT_NODE,
+  LAST_SIGNAL,
+};
+
+static guint signals[LAST_SIGNAL];
 static GParamSpec *properties [N_PROPS];
 
 static void pw_media_source_paintable_init (GdkPaintableInterface *iface);
@@ -474,6 +482,9 @@ on_core_error_cb (void       *user_data,
                           message);
 }
 
+static gboolean connect_stream (PwMediaStream  *self,
+                                uint32_t        node_id,
+                                GError        **error);
 static void
 on_core_done_cb (void     *user_data,
                  uint32_t  id,
@@ -481,10 +492,31 @@ on_core_done_cb (void     *user_data,
 {
   PwMediaStream *self = user_data;
 
-  g_message ("Core done");
-  if (self->node_id == 0 && id == PW_ID_CORE)
+  g_message ("Core done (%d, %d, %d)",
+             id == PW_ID_CORE,
+             self->sync_seq,
+             seq);
+
+  if (id == PW_ID_CORE && self->sync_seq == seq)
     {
-      g_message ("Core done, %d objects", g_list_length (self->nodes_list));
+      g_autoptr (GError) error = NULL;
+      g_autoptr (GList) nodes = NULL;
+      uint32_t selected_node_id;
+
+      g_message ("Selecting nodes (%p, %d)",
+                 self,
+                 g_signal_handler_is_connected (self, signals[SELECT_NODE]));
+
+      nodes = g_hash_table_get_values (self->nodes);
+      g_signal_emit (self,
+                     signals[SELECT_NODE],
+                     0,
+                     nodes,
+                     &selected_node_id);
+
+      g_message ("Selected node: %u", selected_node_id);
+
+      connect_stream (self, selected_node_id, &error);
     }
 }
 
@@ -556,14 +588,30 @@ connect_stream (PwMediaStream  *self,
 }
 
 static void
-on_registry_event_global (void                  *data,
-                          uint32_t               node_id,
+on_registry_event_global (void                  *user_data,
+                          uint32_t               id,
                           uint32_t               permissions,
                           const char            *type,
                           uint32_t               version,
                           const struct spa_dict *props)
 {
-  g_message ("Global event (%s)", type);
+  PwMediaStreamNode *stream_node;
+  PwMediaStream *self = user_data;
+
+  if (g_strcmp0 (type, PW_TYPE_INTERFACE_Node) != 0 ||
+      g_strcmp0 (spa_dict_lookup (props, "media.class"), "Video/Source") != 0 ||
+      g_strcmp0 (spa_dict_lookup (props, "media.role"), "Camera") != 0)
+    {
+      return;
+    }
+
+  g_message ("Global event (%s, %u)", type, id);
+
+  stream_node = g_new0 (PwMediaStreamNode, 1);
+  stream_node->node_id = id;
+  stream_node->description = g_strdup (spa_dict_lookup (props, "node.description"));
+  g_hash_table_insert (self->nodes, GUINT_TO_POINTER (id), stream_node);
+  g_message ("  Added %u (nodes: %d)", id, g_hash_table_size (self->nodes));
 }
 
 static void
@@ -592,6 +640,8 @@ select_node (PwMediaStream  *self,
                             &registry_events,
                             self);
 
+  self->sync_seq = pw_core_sync (self->core, PW_ID_CORE, self->sync_seq);
+
   return TRUE;
 }
 
@@ -614,9 +664,12 @@ pipewire_loop_source_dispatch (GSource     *source,
                                gpointer     user_data)
 {
   PipeWireSource *pw_source = (PipeWireSource *) source;
+  struct pw_loop *loop;
   int result;
 
-  result = pw_loop_iterate (pw_source->pipewire_loop, 0);
+
+  loop = pw_main_loop_get_loop (pw_source->media_stream->mainloop);
+  result = pw_loop_iterate (loop, 0);
   if (result < 0)
     g_warning ("pipewire_loop_iterate failed: %s", spa_strerror (result));
 
@@ -627,9 +680,10 @@ static void
 pipewire_loop_source_finalize (GSource *source)
 {
   PipeWireSource *pw_source = (PipeWireSource *) source;
+  struct pw_loop *loop;
 
-  pw_loop_leave (pw_source->pipewire_loop);
-  pw_loop_destroy (pw_source->pipewire_loop);
+  loop = pw_main_loop_get_loop (pw_source->media_stream->mainloop);
+  pw_loop_leave (loop);
 }
 
 static GSourceFuncs pw_source_funcs =
@@ -646,22 +700,18 @@ static PipeWireSource *
 create_pipewire_source (PwMediaStream *self)
 {
   PipeWireSource *pw_source;
+  struct pw_loop *loop;
 
   pw_source = (PipeWireSource *) g_source_new (&pw_source_funcs,
                                                sizeof (PipeWireSource));
   pw_source->media_stream = self;
-  pw_source->pipewire_loop = pw_loop_new (NULL);
-  if (!pw_source->pipewire_loop)
-    {
-      g_source_unref ((GSource *) pw_source);
-      return NULL;
-    }
 
+  loop = pw_main_loop_get_loop (self->mainloop);
   g_source_add_unix_fd (&pw_source->base,
-                        pw_loop_get_fd (pw_source->pipewire_loop),
+                        pw_loop_get_fd (loop),
                         G_IO_IN | G_IO_ERR);
 
-  pw_loop_enter (pw_source->pipewire_loop);
+  pw_loop_enter (loop);
   g_source_attach (&pw_source->base, NULL);
 
   return pw_source;
@@ -820,6 +870,15 @@ pw_media_stream_initable_init (GInitable     *initable,
                                GError       **error)
 {
   PwMediaStream *self = PW_MEDIA_STREAM (initable);
+  struct pw_loop *loop;
+
+  self->mainloop = pw_main_loop_new (NULL);
+  if (!self->mainloop)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Failed to create PipeWire main loop");
+      return FALSE;
+    }
 
   self->source = create_pipewire_source (self);
   if (!self->source)
@@ -829,7 +888,8 @@ pw_media_stream_initable_init (GInitable     *initable,
       return FALSE;
     }
 
-  self->context = pw_context_new (self->source->pipewire_loop, NULL, 0);
+  loop = pw_main_loop_get_loop (self->mainloop);
+  self->context = pw_context_new (loop, NULL, 0);
   if (!self->source)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -837,10 +897,14 @@ pw_media_stream_initable_init (GInitable     *initable,
       return FALSE;
     }
 
-  self->core = pw_context_connect_fd (self->context,
-                                      fcntl (self->pipewire_fd, F_DUPFD_CLOEXEC, 5),
-                                      NULL,
-                                      0);
+  if (self->node_id != PW_ID_ANY)
+    self->core = pw_context_connect_fd (self->context,
+                                        fcntl (self->pipewire_fd, F_DUPFD_CLOEXEC, 5),
+                                        NULL,
+                                        0);
+  else
+    self->core = pw_context_connect (self->context, NULL, 0);
+
   if (!self->core)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -853,7 +917,7 @@ pw_media_stream_initable_init (GInitable     *initable,
                         &core_events,
                         self);
 
-  if (self->node_id != 0)
+  if (self->node_id != PW_ID_ANY)
     return connect_stream (self, self->node_id, error);
   else
     return select_node (self, error);
@@ -940,6 +1004,8 @@ pw_media_stream_dispose (GObject *object)
 {
   PwMediaStream *self = (PwMediaStream *)object;
 
+  g_message ("Disposing");
+
   if (self->stream)
     pw_stream_disconnect (self->stream);
   g_clear_pointer (&self->stream, pw_stream_destroy);
@@ -998,7 +1064,7 @@ pw_media_stream_set_property (GObject      *object,
       break;
 
     case PROP_NODE_ID:
-      g_assert (self->node_id == 0);
+      g_assert (self->node_id == PW_ID_ANY);
       self->node_id = g_value_get_uint (value);
       break;
 
@@ -1022,6 +1088,14 @@ pw_media_stream_class_init (PwMediaStreamClass *klass)
   media_stream_class->realize = pw_media_stream_realize;
   media_stream_class->unrealize = pw_media_stream_unrealize;
 
+  signals[SELECT_NODE] = g_signal_new ("select-node",
+                                       G_TYPE_FROM_CLASS (object_class),
+                                       G_SIGNAL_RUN_FIRST,
+                                       0, NULL, NULL, NULL,
+                                       G_TYPE_UINT,
+                                       1,
+                                       G_TYPE_POINTER);
+
   properties[PROP_PIPEWIRE_FD] =
     g_param_spec_int ("pipewire-fd", "", "",
                       0, G_MAXINT, 0,
@@ -1029,7 +1103,7 @@ pw_media_stream_class_init (PwMediaStreamClass *klass)
 
   properties[PROP_NODE_ID] =
     g_param_spec_uint ("node-id", "", "",
-                       0, G_MAXINT, 0,
+                       0, G_MAXUINT32, PW_ID_ANY,
                        G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (object_class, N_PROPS, properties);
@@ -1038,6 +1112,8 @@ pw_media_stream_class_init (PwMediaStreamClass *klass)
 static void
 pw_media_stream_init (PwMediaStream *self)
 {
+  self->node_id = PW_ID_ANY;
+  self->nodes = g_hash_table_new (NULL, NULL);
 }
 
 GtkMediaStream *
