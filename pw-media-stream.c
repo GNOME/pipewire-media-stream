@@ -443,7 +443,7 @@ on_state_changed_cb (void                 *user_data,
            error ? error : "none");
 
   if (old == PW_STREAM_STATE_CONNECTING && state == PW_STREAM_STATE_PAUSED)
-    gtk_media_stream_prepared (GTK_MEDIA_STREAM (self), FALSE, TRUE, FALSE, 0);
+    gtk_media_stream_set_prepared (GTK_MEDIA_STREAM (self), FALSE, TRUE, FALSE, 0);
 }
 
 static const struct pw_stream_events stream_events = {
