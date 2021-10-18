@@ -27,6 +27,7 @@ struct _PwMediaStream
 {
   GtkMediaStream parent_instance;
 
+  GskGLShader *yuv_rgb_shader;
   GdkGLContext *gl_context;
   GdkPaintable *paintable;
 
@@ -142,11 +143,29 @@ spa_pixel_format_to_drm_format (uint32_t  spa_format,
       *out_format = DRM_FORMAT_XRGB8888;
       break;
 
+    case SPA_VIDEO_FORMAT_YUY2:
+      *out_format = DRM_FORMAT_YUYV;
+      break;
+
     default:
       return FALSE;
     }
 
   return TRUE;
+}
+
+static gboolean
+format_needs_yuv_conversion (PwMediaStream *self)
+{
+  switch (self->format.info.raw.format)
+    {
+    case SPA_VIDEO_FORMAT_AYUV:
+    case SPA_VIDEO_FORMAT_YUY2:
+      return TRUE;
+
+    default:
+      return FALSE;
+    }
 }
 
 
@@ -200,7 +219,7 @@ on_process_cb (void *user_data)
     {
       uint32_t *offsets;
       uint32_t *strides;
-      uint64_t modifiers[1];
+      uint64_t *modifiers;
       uint32_t n_datas;
       unsigned int i;
       int *fds;
@@ -221,6 +240,7 @@ on_process_cb (void *user_data)
       fds = g_alloca (sizeof (int) * n_datas);
       offsets = g_alloca (sizeof (uint32_t) * n_datas);
       strides = g_alloca (sizeof (uint32_t) * n_datas);
+      modifiers = g_alloca (sizeof (uint64_t) * n_datas);
 
       for (i = 0; i < n_datas; i++)
         {
@@ -235,7 +255,7 @@ on_process_cb (void *user_data)
                                            drm_format,
                                            self->format.info.raw.size.width,
                                            self->format.info.raw.size.height,
-                                           1,
+                                           n_datas,
                                            fds,
                                            strides,
                                            offsets,
@@ -454,7 +474,7 @@ on_state_changed_cb (void                 *user_data,
            error ? error : "none");
 
   if (old == PW_STREAM_STATE_CONNECTING && state == PW_STREAM_STATE_PAUSED)
-    gtk_media_stream_set_prepared (GTK_MEDIA_STREAM (self), FALSE, TRUE, FALSE, 0);
+    gtk_media_stream_stream_prepared (GTK_MEDIA_STREAM (self), FALSE, TRUE, FALSE, 0);
 }
 
 static const struct pw_stream_events stream_events = {
@@ -556,11 +576,12 @@ connect_stream (PwMediaStream  *self,
     SPA_PARAM_EnumFormat,
     SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video),
     SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw),
-    SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id (4,
+    SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id (5,
                                                      SPA_VIDEO_FORMAT_BGRA,
                                                      SPA_VIDEO_FORMAT_RGBA,
                                                      SPA_VIDEO_FORMAT_BGRx,
-                                                     SPA_VIDEO_FORMAT_RGBx),
+                                                     SPA_VIDEO_FORMAT_RGBx,
+                                                     SPA_VIDEO_FORMAT_YUY2),
     SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
                                                            &SPA_RECTANGLE(1, 1),
                                                            &SPA_RECTANGLE(8192, 4320)));
@@ -734,9 +755,9 @@ has_effective_crop (PwMediaStream *self)
 
 static void
 pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
-                                     GdkSnapshot  *snapshot,
-                                     double        width,
-                                     double        height)
+                                    GdkSnapshot  *snapshot,
+                                    double        width,
+                                    double        height)
 {
   PwMediaStream *self = PW_MEDIA_STREAM (paintable);
   gboolean has_crop;
@@ -752,6 +773,8 @@ pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
 
   if (self->paintable)
     {
+      gboolean convert_yuv = format_needs_yuv_conversion (self);
+
       if (has_crop)
         {
           gtk_snapshot_save (snapshot);
@@ -763,20 +786,45 @@ pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
 
           gtk_snapshot_push_clip (snapshot,
                                   &GRAPHENE_RECT_INIT (0, 0, width, height));
+
+          if (convert_yuv)
+            gtk_snapshot_push_gl_shader (snapshot,
+                                         self->yuv_rgb_shader,
+                                         &GRAPHENE_RECT_INIT (0, 0, width, height),
+                                         gsk_gl_shader_format_args (self->yuv_rgb_shader, NULL));
+
           gdk_paintable_snapshot (self->paintable,
                                   snapshot,
                                   width,
                                   height);
+
+          if (convert_yuv)
+            {
+              gtk_snapshot_pop (snapshot);
+            }
+
           gtk_snapshot_pop (snapshot);
 
           gtk_snapshot_restore (snapshot);
         }
       else
         {
+          if (convert_yuv)
+            gtk_snapshot_push_gl_shader (snapshot,
+                                         self->yuv_rgb_shader,
+                                         &GRAPHENE_RECT_INIT (0, 0, width, height),
+                                         gsk_gl_shader_format_args (self->yuv_rgb_shader, NULL));
+
           gdk_paintable_snapshot (self->paintable,
                                   snapshot,
                                   width,
                                   height);
+
+          if (convert_yuv)
+            {
+              gtk_snapshot_gl_shader_pop_texture (snapshot);
+              gtk_snapshot_pop (snapshot);
+            }
         }
     }
 
@@ -1114,6 +1162,7 @@ pw_media_stream_init (PwMediaStream *self)
 {
   self->node_id = PW_ID_ANY;
   self->nodes = g_hash_table_new (NULL, NULL);
+  self->yuv_rgb_shader = gsk_gl_shader_new_from_resource ("/com/feaneron/example/PipeWireMediaStream/glsl/yuv2rgb.glsl");
 }
 
 GtkMediaStream *

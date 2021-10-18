@@ -20,11 +20,54 @@ struct _PmsWindow
 
 G_DEFINE_TYPE (PmsWindow, pms_window, ADW_TYPE_APPLICATION_WINDOW)
 
+typedef struct
+{
+  GtkResponseType response_id;
+  GMainLoop *loop;
+  GtkDialog *dialog;
+} RunInfo;
+
+static void
+shutdown_loop (RunInfo *run_info)
+{
+  if (g_main_loop_is_running (run_info->loop))
+    g_main_loop_quit (run_info->loop);
+}
+
+static void
+unmap_cb (GtkDialog *dialog,
+          RunInfo   *run_info)
+{
+  shutdown_loop (run_info);
+}
+
+static void
+response_cb (GtkDialog *dialog,
+             gint       response_id,
+             RunInfo   *run_info)
+{
+  run_info->response_id = response_id;
+  shutdown_loop (run_info);
+}
+
+static gboolean
+close_requested_cb (GtkDialog *dialog,
+                    RunInfo   *run_info)
+{
+  shutdown_loop (run_info);
+  return GDK_EVENT_PROPAGATE;
+}
+
 static uint32_t
 on_media_stream_select_node_cb (PwMediaStream *media_stream,
                                 GList         *nodes,
                                 PmsWindow     *self)
 {
+  RunInfo run_info = {
+    GTK_RESPONSE_NONE,
+    NULL,
+    NULL,
+  };
   PwMediaStreamNode *node;
 
   if (!nodes)
@@ -34,6 +77,15 @@ on_media_stream_select_node_cb (PwMediaStream *media_stream,
   gtk_stack_set_visible_child_name (self->stack, "video");
   g_message ("Selecting first node: %u", node->node_id);
 
+  /*
+  g_signal_connect (dialog, "close-request", G_CALLBACK (close_requested_cb), &run_info);
+  g_signal_connect (dialog, "response", G_CALLBACK (response_cb), &run_info);
+  g_signal_connect (dialog, "unmap", G_CALLBACK (unmap_cb), &run_info);
+
+  run_info.loop = g_main_loop_new (NULL, FALSE);
+  g_main_loop_run (run_info.loop);
+  g_clear_pointer (&run_info.loop, g_main_loop_unref);
+*/
   return node->node_id;
 }
 
@@ -98,7 +150,7 @@ on_screencast_started (GObject      *source,
   g_autoptr (GtkMediaStream) media_stream = NULL;
   g_autoptr (GVariant) stream_properties = NULL;
   g_autoptr (GError) error = NULL;
-	GVariantIter iter;
+  GVariantIter iter;
   PmsWindow *self;
   GVariant *streams;
   uint32_t node_id;
@@ -117,8 +169,8 @@ on_screencast_started (GObject      *source,
   fd = xdp_session_open_pipewire_remote (self->session);
   streams = xdp_session_get_streams (self->session);
 
-	g_variant_iter_init (&iter, streams);
-	g_variant_iter_loop (&iter, "(u@a{sv})", &node_id, &stream_properties);
+  g_variant_iter_init (&iter, streams);
+  g_variant_iter_loop (&iter, "(u@a{sv})", &node_id, &stream_properties);
 
   media_stream = pw_media_stream_new (fd, node_id, &error);
   gtk_video_set_media_stream (self->video, media_stream);
