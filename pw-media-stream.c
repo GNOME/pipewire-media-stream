@@ -18,6 +18,13 @@
 
 typedef struct
 {
+  int major;
+  int minor;
+  int micro;
+} PmsPwVersion;
+
+typedef struct
+{
   GSource base;
 
   PwMediaStream *media_stream;
@@ -27,6 +34,9 @@ typedef struct
 struct _PwMediaStream
 {
   GtkMediaStream parent_instance;
+
+  PmsPwVersion server_version;
+  int server_version_sync;
 
   GdkGLContext *gl_context;
   GdkPaintable *paintable;
@@ -82,6 +92,13 @@ G_DEFINE_TYPE_WITH_CODE (PwMediaStream, pw_media_stream, GTK_TYPE_MEDIA_STREAM,
 /*
  * Auxiliary methods
  */
+
+static inline gboolean
+parse_pipewire_version (PmsPwVersion *dest,
+                        const char   *version)
+{
+  return sscanf (version, "%d.%d.%d", &dest->major, &dest->minor, &dest->micro) == 3;
+}
 
 static gboolean
 spa_pixel_format_to_gdk_memory_format (uint32_t         spa_format,
@@ -454,6 +471,17 @@ static const struct pw_stream_events stream_events = {
 };
 
 static void
+on_core_done_cb (void     *user_data,
+                 uint32_t  id,
+                 int       seq)
+{
+  PwMediaStream *self = user_data;
+
+  if (id == PW_ID_CORE && self->server_version_sync == seq)
+    self->server_version_sync = -1;
+}
+
+static void
 on_core_error_cb (void       *user_data,
                   uint32_t    id,
                   int         seq,
@@ -471,9 +499,23 @@ on_core_error_cb (void       *user_data,
                           message);
 }
 
+static void
+on_core_info_cb (void                      *user_data,
+                 const struct pw_core_info *info)
+{
+  PwMediaStream *self = user_data;
+
+  g_message ("PipeWire server version: %s", info->version);
+
+  if (!parse_pipewire_version (&self->server_version, info->version))
+    g_warning ("Failed to parse PipeWire version");
+}
+
 static const struct pw_core_events core_events = {
   PW_VERSION_CORE_EVENTS,
+  .done = on_core_done_cb,
   .error = on_core_error_cb,
+  .info = on_core_info_cb,
 };
 
 
@@ -737,6 +779,14 @@ pw_media_stream_initable_init (GInitable     *initable,
                         &self->core_listener,
                         &core_events,
                         self);
+
+  /* Fetch the server version */
+  self->server_version_sync = pw_core_sync (self->core,
+                                            PW_ID_CORE,
+                                            self->server_version_sync);
+
+  while (self->server_version_sync != -1)
+    g_main_context_iteration (NULL, TRUE);
 
   /* Stream */
   self->stream = pw_stream_new (self->core,
