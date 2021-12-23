@@ -107,6 +107,14 @@ on_start_screencast_button_clicked_cb (GtkButton *button,
                                         self);
 }
 
+static void
+on_go_previous_button_clicked_cb (GtkButton *button,
+                                  PmsWindow *self)
+{
+  gtk_stack_set_visible_child_name (self->stack, "start");
+  gtk_video_set_media_stream (self->video, NULL);
+}
+
 static gboolean
 pms_window_close_request (GtkWindow *window)
 {
@@ -147,6 +155,7 @@ pms_window_class_init (PmsWindowClass *klass)
   gtk_widget_class_set_template_from_resource (widget_class, "/com/feaneron/example/PipeWireMediaStream/window.ui");
   gtk_widget_class_bind_template_child (widget_class, PmsWindow, stack);
   gtk_widget_class_bind_template_child (widget_class, PmsWindow, video);
+  gtk_widget_class_bind_template_callback (widget_class, on_go_previous_button_clicked_cb);
   gtk_widget_class_bind_template_callback (widget_class, on_start_screencast_button_clicked_cb);
 }
 

@@ -47,8 +47,31 @@
           <object class="GtkStackPage" id="video_page">
             <property name="name">video</property>
             <property name="child">
-              <object class="GtkVideo" id="video">
-                <property name="autoplay">true</property>
+              <object class="GtkOverlay">
+
+                <!-- Back button -->
+                <child type="overlay">
+                  <object class="GtkButton">
+                    <property name="margin-top">6</property>
+                    <property name="margin-start">6</property>
+                    <property name="halign">start</property>
+                    <property name="valign">start</property>
+                    <property name="icon-name">go-previous-symbolic</property>
+                    <signal name="clicked" handler="on_go_previous_button_clicked_cb" object="PmsWindow" swapped="no" />
+                    <style>
+                      <class name="circular" />
+                      <class name="osd" />
+                    </style>
+                  </object>
+                </child>
+
+                <!-- Video -->
+                <child>
+                  <object class="GtkVideo" id="video">
+                    <property name="autoplay">true</property>
+                  </object>
+                </child>
+
               </object>
             </property>
           </object>
