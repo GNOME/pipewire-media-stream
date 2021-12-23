@@ -3,6 +3,7 @@
 #include "dmabuf-import.h"
 
 #include <drm/drm_fourcc.h>
+#include <epoxy/egl.h>
 #include <epoxy/gl.h>
 #include <fcntl.h>
 #include <gtk/gtk.h>
@@ -11,6 +12,13 @@
 #include <spa/debug/types.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/utils/result.h>
+
+#ifdef GDK_WINDOWING_X11
+#include <gdk/x11/gdkx.h>
+#endif
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/wayland/gdkwayland.h>
+#endif
 
 #define CURSOR_META_SIZE(width, height) \
   (sizeof (struct spa_meta_cursor) + \
@@ -22,6 +30,13 @@ typedef struct
   int minor;
   int micro;
 } PmsPwVersion;
+
+typedef struct
+{
+  uint32_t spa_format;
+  uint32_t drm_format;
+  GArray *modifiers;
+} PmsFormat;
 
 typedef struct
 {
@@ -40,6 +55,8 @@ struct _PwMediaStream
 
   GdkGLContext *gl_context;
   GdkPaintable *paintable;
+
+  GArray *formats;
 
   uint32_t node_id;
   int pipewire_fd;
@@ -149,6 +166,114 @@ spa_pixel_format_to_drm_format (uint32_t  spa_format,
     }
 
   return FALSE;
+}
+
+static EGLDisplay
+get_egl_display_from_gl_context (GdkGLContext *gl_context)
+{
+  GdkDisplay *display;
+  EGLDisplay egl_display;
+
+  display = gdk_gl_context_get_display (gl_context);
+  egl_display = EGL_NO_DISPLAY;
+
+#ifdef GDK_WINDOWING_WAYLAND
+  if (GDK_IS_WAYLAND_DISPLAY (display))
+    egl_display = gdk_wayland_display_get_egl_display (display);
+#endif
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_DISPLAY (display))
+    egl_display = gdk_x11_display_get_egl_display (display);
+#endif
+
+  return egl_display;
+}
+
+static inline gboolean
+find_drm_format (uint32_t  drm_format,
+                 EGLint   *formats,
+                 EGLint    n_formats)
+{
+  size_t i;
+
+  for (i = 0; i < n_formats; i++)
+    {
+      if (formats[i] == drm_format)
+        return TRUE;
+    }
+
+  return FALSE;
+}
+
+static GArray *
+query_modifiers_for_format (EGLDisplay egl_display,
+                            uint32_t   drm_format)
+{
+  g_autoptr (GArray) modifiers = NULL;
+  EGLuint64KHR implicit_modifier;
+  EGLint n_modifiers;
+
+  eglQueryDmaBufModifiersEXT (egl_display, drm_format, 0, NULL, NULL, &n_modifiers);
+
+  modifiers = g_array_sized_new (FALSE, FALSE, sizeof (EGLuint64KHR), n_modifiers + 1);
+  eglQueryDmaBufModifiersEXT (egl_display,
+                              drm_format,
+                              n_modifiers,
+                              (EGLuint64KHR *)modifiers->data,
+                              NULL,
+                              &n_modifiers);
+
+  /* FIXME: assume we always support implicit modifiers for now */
+  implicit_modifier = DRM_FORMAT_MOD_INVALID;
+  g_array_append_val (modifiers, implicit_modifier);
+
+  return g_steal_pointer (&modifiers);
+}
+
+static void
+clear_format_func (PmsFormat *format)
+{
+  g_clear_pointer (&format->modifiers, g_array_unref);
+}
+
+static void
+query_formats_and_modifiers (PwMediaStream *self)
+{
+  g_autofree EGLint *egl_formats = NULL;
+  EGLDisplay egl_display;
+  EGLint n_egl_formats;
+  size_t i;
+
+  g_assert (self->gl_context != NULL);
+
+  egl_display = get_egl_display_from_gl_context (self->gl_context);
+  eglQueryDmaBufFormatsEXT (egl_display, 0, NULL, &n_egl_formats);
+
+  egl_formats = g_new (EGLint, n_egl_formats);
+  eglQueryDmaBufFormatsEXT (egl_display, n_egl_formats, egl_formats, &n_egl_formats);
+
+  g_clear_pointer (&self->formats, g_array_unref);
+  self->formats = g_array_sized_new (FALSE, FALSE, sizeof (PmsFormat), n_egl_formats);
+  g_array_set_clear_func (self->formats, (GDestroyNotify) clear_format_func);
+
+  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
+    {
+      PmsFormat format;
+
+      if (!find_drm_format (supported_formats[i].drm_format, egl_formats, n_egl_formats))
+        continue;
+
+      format.spa_format = supported_formats[i].spa_format;
+      format.drm_format = supported_formats[i].drm_format;
+      format.modifiers = query_modifiers_for_format (egl_display,
+                                                     supported_formats[i].drm_format);
+
+      g_debug ("EGLDisplay supports format %s (%u modifiers)",
+               supported_formats[i].name,
+               format.modifiers->len);
+
+      g_array_append_val (self->formats, format);
+    }
 }
 
 
@@ -891,6 +1016,8 @@ pw_media_stream_realize (GtkMediaStream *media_stream,
       g_clear_object (&self->gl_context);
       return;
     }
+
+  query_formats_and_modifiers (self);
 }
 
 static void
@@ -915,6 +1042,8 @@ static void
 pw_media_stream_dispose (GObject *object)
 {
   PwMediaStream *self = (PwMediaStream *)object;
+
+  g_clear_pointer (&self->formats, g_array_unref);
 
   if (self->stream)
     pw_stream_disconnect (self->stream);
