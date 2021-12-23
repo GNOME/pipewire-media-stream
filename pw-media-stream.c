@@ -100,59 +100,55 @@ parse_pipewire_version (PmsPwVersion *dest,
   return sscanf (version, "%d.%d.%d", &dest->major, &dest->minor, &dest->micro) == 3;
 }
 
+static const struct {
+  uint32_t spa_format;
+  uint32_t drm_format;
+  GdkMemoryFormat gdk_format;
+  uint32_t bpp;
+  const char *name;
+} supported_formats[] = {
+  { SPA_VIDEO_FORMAT_BGRA, DRM_FORMAT_ARGB8888, GDK_MEMORY_B8G8R8A8, 4, "ARGB8888", },
+  { SPA_VIDEO_FORMAT_RGBA, DRM_FORMAT_ABGR8888, GDK_MEMORY_R8G8B8A8, 4, "ABGR8888", },
+  { SPA_VIDEO_FORMAT_BGRx, DRM_FORMAT_XRGB8888, GDK_MEMORY_B8G8R8A8, 4, "XRGB8888", },
+  { SPA_VIDEO_FORMAT_RGBx, DRM_FORMAT_XBGR8888, GDK_MEMORY_R8G8B8A8, 4, "XBGR8888", },
+};
+
 static gboolean
 spa_pixel_format_to_gdk_memory_format (uint32_t         spa_format,
                                        GdkMemoryFormat *out_format,
                                        uint32_t        *out_bpp)
 {
-  switch (spa_format)
+  size_t i;
+
+  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
     {
-    case SPA_VIDEO_FORMAT_RGBA:
-    case SPA_VIDEO_FORMAT_RGBx:
-      *out_format = GDK_MEMORY_R8G8B8A8;
-      *out_bpp = 4;
-      break;
+      if (supported_formats[i].spa_format != spa_format)
+        continue;
 
-    case SPA_VIDEO_FORMAT_BGRA:
-    case SPA_VIDEO_FORMAT_BGRx:
-      *out_format = GDK_MEMORY_B8G8R8A8;
-      *out_bpp = 4;
-      break;
-
-    default:
-      return FALSE;
+      *out_format = supported_formats[i].gdk_format;
+      *out_bpp = supported_formats[i].bpp;
+      return TRUE;
     }
 
-  return TRUE;
+  return FALSE;
 }
 
 static gboolean
 spa_pixel_format_to_drm_format (uint32_t  spa_format,
                                 uint32_t *out_format)
 {
-  switch (spa_format)
+  size_t i;
+
+  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
     {
-    case SPA_VIDEO_FORMAT_RGBA:
-      *out_format = DRM_FORMAT_ABGR8888;
-      break;
+      if (supported_formats[i].spa_format != spa_format)
+        continue;
 
-    case SPA_VIDEO_FORMAT_RGBx:
-      *out_format = DRM_FORMAT_XBGR8888;
-      break;
-
-    case SPA_VIDEO_FORMAT_BGRA:
-      *out_format = DRM_FORMAT_ARGB8888;
-      break;
-
-    case SPA_VIDEO_FORMAT_BGRx:
-      *out_format = DRM_FORMAT_XRGB8888;
-      break;
-
-    default:
-      return FALSE;
+      *out_format = supported_formats[i].drm_format;
+      return TRUE;
     }
 
-  return TRUE;
+  return FALSE;
 }
 
 
