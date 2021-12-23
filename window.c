@@ -3,7 +3,7 @@
 #include "pw-media-stream.h"
 
 #include <libportal/portal.h>
-#include <libportal/portal-gtk4.h>
+#include <libportal-gtk4/portal-gtk4.h>
 
 struct _PmsWindow
 {
@@ -100,6 +100,8 @@ on_start_screencast_button_clicked_cb (GtkButton *button,
                                         XDP_OUTPUT_WINDOW | XDP_OUTPUT_MONITOR,
                                         XDP_SCREENCAST_FLAG_NONE,
                                         XDP_CURSOR_MODE_METADATA,
+                                        XDP_PERSIST_MODE_NONE,
+                                        NULL,
                                         self->cancellable,
                                         on_screencast_created,
                                         self);

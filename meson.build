@@ -18,7 +18,7 @@ sources = [
 deps = [
   dependency('epoxy'),
   dependency('libadwaita-1'),
-  dependency('libportal'),
+  dependency('libportal-gtk4'),
   dependency('libpipewire-0.3', version: '>= 0.3.20'),
   dependency('gtk4', version: '>= 4.2'),
 ]
