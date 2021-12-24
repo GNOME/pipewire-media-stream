@@ -70,6 +70,7 @@ struct _PwMediaStream
   struct pw_stream *stream;
   struct spa_hook stream_listener;
   struct spa_video_info format;
+  struct spa_source *renegotiate_event;
   gboolean connected;
 
   struct {
@@ -385,6 +386,23 @@ build_stream_format_params (PwMediaStream          *self,
 }
 
 static void
+renegotiate_stream_format (void     *user_data,
+                           uint64_t  expirations)
+{
+  g_autoptr (GPtrArray) new_params = NULL;
+  struct spa_pod_builder builder;
+  PwMediaStream *self = user_data;
+  uint8_t params_buffer[2048];
+
+  builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
+  new_params = build_stream_format_params (self, &builder);
+
+  pw_stream_update_params (self->stream,
+                           (const struct spa_pod **)new_params->pdata,
+                           new_params->len);
+}
+
+static void
 connect_stream (PwMediaStream *self)
 {
   g_autoptr (GPtrArray) params = NULL;
@@ -462,6 +480,7 @@ on_process_cb (void *user_data)
 
   if (buffer->datas[0].type == SPA_DATA_DmaBuf)
     {
+      gboolean use_modifiers;
       uint32_t *offsets;
       uint32_t *strides;
       uint64_t *modifiers;
@@ -496,6 +515,8 @@ on_process_cb (void *user_data)
           modifiers[i] = self->format.info.raw.modifier;
         }
 
+      use_modifiers = self->format.info.raw.modifier != DRM_FORMAT_MOD_INVALID;
+
       g_clear_object (&self->paintable);
       self->paintable = import_dmabuf_egl (self->gl_context,
                                            drm_format,
@@ -505,7 +526,16 @@ on_process_cb (void *user_data)
                                            fds,
                                            strides,
                                            offsets,
-                                           modifiers);
+                                           use_modifiers ? modifiers : NULL);
+
+      if (!self->paintable)
+        {
+          remove_modifier_from_format (self,
+                                       self->format.info.raw.format,
+                                       self->format.info.raw.modifier);
+          pw_loop_signal_event (self->source->pipewire_loop, self->renegotiate_event);
+        }
+
       invalidated = TRUE;
     }
   else
@@ -1043,6 +1073,10 @@ pw_media_stream_initable_init (GInitable     *initable,
                         &self->core_listener,
                         &core_events,
                         self);
+
+  self->renegotiate_event = pw_loop_add_event (self->source->pipewire_loop,
+                                               renegotiate_stream_format,
+                                               self);
 
   /* Fetch the server version */
   self->server_version_sync = pw_core_sync (self->core,
