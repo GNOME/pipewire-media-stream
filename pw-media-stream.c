@@ -118,6 +118,19 @@ parse_pipewire_version (PmsPwVersion *dest,
   return sscanf (version, "%d.%d.%d", &dest->major, &dest->minor, &dest->micro) == 3;
 }
 
+static inline gboolean
+check_pipewire_version (const PmsPwVersion *version,
+                        int                 major,
+                        int                 minor,
+                        int                 micro)
+{
+  if (version->major != major)
+    return version->major > major;
+  if (version->minor != minor)
+    return version->minor > minor;
+  return version->micro > micro;
+}
+
 static const struct {
   uint32_t spa_format;
   uint32_t drm_format;
@@ -629,6 +642,7 @@ on_param_changed_cb (void                 *user_data,
   PwMediaStream *self = user_data;
   const struct spa_pod *params[3];
   uint8_t params_buffer[1024];
+  int buffer_types;
   int result;
 
   if (!param || id != SPA_PARAM_Format)
@@ -678,12 +692,19 @@ on_param_changed_cb (void                 *user_data,
                                                    CURSOR_META_SIZE (1024, 1024)));
 
   /* Buffer options */
+  buffer_types = 1 << SPA_DATA_MemPtr;
+
+  if (check_pipewire_version (&self->server_version, 0, 3, 24) ||
+      spa_pod_find_prop (param, NULL, SPA_FORMAT_VIDEO_modifier) != NULL)
+    {
+      buffer_types |= 1 << SPA_DATA_DmaBuf;
+    }
+
   params[2] = spa_pod_builder_add_object (
     &pod_builder,
     SPA_TYPE_OBJECT_ParamBuffers,
     SPA_PARAM_Buffers,
-    SPA_PARAM_BUFFERS_dataType, SPA_POD_Int ((1 << SPA_DATA_MemPtr) |
-                                             (1 << SPA_DATA_DmaBuf)));
+    SPA_PARAM_BUFFERS_dataType, SPA_POD_Int (buffer_types));
 
   pw_stream_update_params (self->stream, params, 3);
 }
