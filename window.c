@@ -113,6 +113,11 @@ on_go_previous_button_clicked_cb (GtkButton *button,
 {
   gtk_stack_set_visible_child_name (self->stack, "start");
   gtk_video_set_media_stream (self->video, NULL);
+
+  if (self->session)
+    xdp_session_close (self->session);
+
+  g_clear_object (&self->session);
 }
 
 static gboolean
