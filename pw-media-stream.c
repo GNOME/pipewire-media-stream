@@ -464,7 +464,7 @@ on_process_cb (void *user_data)
     {
       uint32_t *offsets;
       uint32_t *strides;
-      uint64_t modifiers[1];
+      uint64_t *modifiers;
       uint32_t n_datas;
       unsigned int i;
       int *fds;
@@ -485,6 +485,7 @@ on_process_cb (void *user_data)
       fds = g_alloca (sizeof (int) * n_datas);
       offsets = g_alloca (sizeof (uint32_t) * n_datas);
       strides = g_alloca (sizeof (uint32_t) * n_datas);
+      modifiers = g_alloca (sizeof (uint64_t) * n_datas);
 
       for (i = 0; i < n_datas; i++)
         {
@@ -499,7 +500,7 @@ on_process_cb (void *user_data)
                                            drm_format,
                                            self->format.info.raw.size.width,
                                            self->format.info.raw.size.height,
-                                           1,
+                                           n_datas,
                                            fds,
                                            strides,
                                            offsets,
