@@ -375,7 +375,9 @@ build_stream_format_params (PwMediaStream          *self,
     {
       const PmsFormat *format = &g_array_index (self->formats, PmsFormat, i);
 
-      g_ptr_array_add (params, build_format_param (self, builder, format, TRUE));
+      if (check_pipewire_version (&self->server_version, 0, 3, 33))
+        g_ptr_array_add (params, build_format_param (self, builder, format, TRUE));
+
       g_ptr_array_add (params, build_format_param (self, builder, format, FALSE));
     }
 
