@@ -469,11 +469,12 @@ on_process_cb (void *user_data)
       unsigned int i;
       int *fds;
 
-      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d",
+      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, modifier:%lu",
                buffer->datas[0].fd, buffer->datas[0].chunk->stride,
                buffer->datas[0].chunk->offset,
                self->format.info.raw.size.width,
-               self->format.info.raw.size.height);
+               self->format.info.raw.size.height,
+               self->format.info.raw.modifier);
 
       if (!spa_pixel_format_to_drm_format (self->format.info.raw.format, &drm_format))
         {
