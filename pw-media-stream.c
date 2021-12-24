@@ -70,6 +70,7 @@ struct _PwMediaStream
   struct pw_stream *stream;
   struct spa_hook stream_listener;
   struct spa_video_info format;
+  gboolean connected;
 
   struct {
     gboolean valid;
@@ -274,6 +275,127 @@ query_formats_and_modifiers (PwMediaStream *self)
 
       g_array_append_val (self->formats, format);
     }
+}
+
+static void
+remove_modifier_from_format (PwMediaStream *self,
+                             uint32_t       spa_format,
+                             uint64_t       modifier)
+{
+  size_t i;
+
+  for (i = 0; i < self->formats->len; i++)
+    {
+      const PmsFormat *format = &g_array_index (self->formats, PmsFormat, i);
+
+      if (format->spa_format != spa_format)
+        continue;
+
+      if (check_pipewire_version (&self->server_version, 0, 3, 40))
+        {
+          int64_t j;
+
+          for (j = 0; j < format->modifiers->len; j++)
+            {
+              if (g_array_index (format->modifiers, uint64_t, j) == modifier)
+                g_array_remove_index_fast (format->modifiers, j--);
+            }
+        }
+      else
+        {
+          /* Remove all modifiers */
+          g_array_set_size (format->modifiers, 0);
+        }
+    }
+}
+
+static inline struct spa_pod *
+build_format_param (PwMediaStream          *self,
+                    struct spa_pod_builder *builder,
+                    const PmsFormat        *format,
+                    gboolean                build_modifiers)
+{
+  struct spa_pod_frame object_frame;
+
+  spa_pod_builder_push_object (builder, &object_frame, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
+  spa_pod_builder_add (builder, SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video), 0);
+  spa_pod_builder_add (builder, SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw), 0);
+  spa_pod_builder_add (builder, SPA_FORMAT_VIDEO_format, SPA_POD_Id (format->spa_format), 0);
+
+  if (build_modifiers && format->modifiers->len > 0)
+    {
+      struct spa_pod_frame modifiers_frame;
+      uint32_t i;
+
+      spa_pod_builder_prop (builder,
+                            SPA_FORMAT_VIDEO_modifier,
+                            SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE);
+
+      spa_pod_builder_push_choice (builder, &modifiers_frame, SPA_CHOICE_Enum, 0);
+      for (i = 0; i < format->modifiers->len; i++)
+        spa_pod_builder_long (builder, g_array_index (format->modifiers, uint64_t, i));
+      spa_pod_builder_pop (builder, &modifiers_frame);
+    }
+
+  spa_pod_builder_add (builder,
+                       SPA_FORMAT_VIDEO_size,
+                       SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
+                                                       &SPA_RECTANGLE(1, 1),
+                                                       &SPA_RECTANGLE(8192, 4320)),
+                       0);
+
+  return spa_pod_builder_pop (builder, &object_frame);
+}
+
+static GPtrArray *
+build_stream_format_params (PwMediaStream          *self,
+                            struct spa_pod_builder *builder)
+{
+  g_autoptr (GPtrArray) params = NULL;
+  uint32_t i;
+
+  g_assert (self->formats != NULL);
+
+  params = g_ptr_array_sized_new (2 * self->formats->len);
+
+  for (i = 0; i < self->formats->len; i++)
+    {
+      const PmsFormat *format = &g_array_index (self->formats, PmsFormat, i);
+
+      g_ptr_array_add (params, build_format_param (self, builder, format, TRUE));
+      g_ptr_array_add (params, build_format_param (self, builder, format, FALSE));
+    }
+
+  return g_steal_pointer (&params);
+}
+
+static void
+connect_stream (PwMediaStream *self)
+{
+  g_autoptr (GPtrArray) params = NULL;
+  struct spa_pod_builder builder;
+  uint8_t params_buffer[2048];
+  int result;
+
+  g_assert (self->gl_context != NULL);
+
+  if (self->connected)
+    return;
+
+  builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
+  params = build_stream_format_params (self, &builder);
+
+  result = pw_stream_connect (self->stream,
+                              PW_DIRECTION_INPUT,
+                              self->node_id,
+                              PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+                              (const struct spa_pod **)params->pdata,
+                              params->len);
+
+  if (result != 0)
+    g_warning ("Could not connect: %s", spa_strerror (result));
+
+  self->connected = TRUE;
 }
 
 
@@ -864,10 +986,6 @@ pw_media_stream_initable_init (GInitable     *initable,
                                GError       **error)
 {
   PwMediaStream *self = PW_MEDIA_STREAM (initable);
-  struct spa_pod_builder pod_builder;
-  const struct spa_pod *params[1];
-  uint8_t params_buffer[1024];
-  int result;
 
   self->source = create_pipewire_source (self);
   if (!self->source)
@@ -917,26 +1035,6 @@ pw_media_stream_initable_init (GInitable     *initable,
                                                    PW_KEY_MEDIA_ROLE, "Screen",
                                                    NULL));
 
-  pw_stream_add_listener (self->stream,
-                          &self->stream_listener,
-                          &stream_events,
-                          self);
-
-  pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
-  params[0] = spa_pod_builder_add_object (
-    &pod_builder,
-    SPA_TYPE_OBJECT_Format,
-    SPA_PARAM_EnumFormat,
-    SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video),
-    SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw),
-    SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id (4,
-                                                     SPA_VIDEO_FORMAT_BGRA,
-                                                     SPA_VIDEO_FORMAT_RGBA,
-                                                     SPA_VIDEO_FORMAT_BGRx,
-                                                     SPA_VIDEO_FORMAT_RGBx),
-    SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
-                                                           &SPA_RECTANGLE(1, 1),
-                                                           &SPA_RECTANGLE(8192, 4320)));
   if (!self->stream)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -944,18 +1042,10 @@ pw_media_stream_initable_init (GInitable     *initable,
       return FALSE;
     }
 
-  result = pw_stream_connect (self->stream,
-                              PW_DIRECTION_INPUT,
-                              self->node_id,
-                              PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
-                              params, 1);
-
-  if (result != 0)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Could not connect: %s", spa_strerror (result));
-      return FALSE;
-    }
+  pw_stream_add_listener (self->stream,
+                          &self->stream_listener,
+                          &stream_events,
+                          self);
 
   return TRUE;
 }
@@ -1018,6 +1108,7 @@ pw_media_stream_realize (GtkMediaStream *media_stream,
     }
 
   query_formats_and_modifiers (self);
+  connect_stream (self);
 }
 
 static void
