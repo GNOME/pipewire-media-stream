@@ -346,6 +346,7 @@ build_format_param (PwMediaStream          *self,
                             SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE);
 
       spa_pod_builder_push_choice (builder, &modifiers_frame, SPA_CHOICE_Enum, 0);
+      spa_pod_builder_long (builder, g_array_index (format->modifiers, uint64_t, 0));
       for (i = 0; i < format->modifiers->len; i++)
         spa_pod_builder_long (builder, g_array_index (format->modifiers, uint64_t, i));
       spa_pod_builder_pop (builder, &modifiers_frame);
