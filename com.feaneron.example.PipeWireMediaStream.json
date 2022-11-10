@@ -29,53 +29,18 @@
         {
             "name" : "libportal",
             "buildsystem" : "meson",
-            "sources" : [
-                {
-                    "type" : "git",
-                    "url" : "https://github.com/GeorgesStavracas/libportal.git",
-                    "branch" : "gbsneto/cursor-modes"
-                }
-            ]
-        },
-        {
-            "name" : "libadwaita",
-            "buildsystem" : "meson",
             "config-opts" : [
-                "-Dexamples=false",
-                "-Dtests=false",
-                "-Dvapi=false"
+                "-Dbackends=gtk4",
+                "-Ddocs=false",
+                "-Dintrospection=false",
+                "-Dvapi=false",
+                "-Dportal-tests=false"
             ],
             "sources" : [
                 {
                     "type" : "git",
-                    "url" : "https://gitlab.gnome.org/GNOME/libadwaita.git",
-                    "branch": "main"
-                }
-            ],
-            "modules" : [
-                {
-                    "name" : "sassc",
-                    "buildsystem" : "meson",
-                    "sources" : [
-                        {
-                            "type" : "git",
-                            "url" : "https://github.com/lazka/sassc.git",
-                            "branch" : "meson"
-                        }
-                    ],
-                    "modules" : [
-                        {
-                            "name" : "libsass",
-                            "buildsystem" : "meson",
-                            "sources" : [
-                                {
-                                    "type" : "git",
-                                    "url" : "https://github.com/lazka/libsass.git",
-                                    "branch" : "meson"
-                                }
-                            ]
-                        }
-                    ]
+                    "url" : "https://github.com/flatpak/libportal.git",
+                    "branch" : "main"
                 }
             ]
         },
