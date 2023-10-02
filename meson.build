@@ -9,7 +9,6 @@ project('pipewire-media-stream', 'c',
 gnome = import('gnome')
 
 sources = [
-  'dmabuf-import.c',
   'pw-media-stream.c',
   'window.c',
   'main.c',

@@ -1,7 +1,5 @@
 #include "pw-media-stream.h"
 
-#include "dmabuf-import.h"
-
 #include <drm/drm_fourcc.h>
 #include <epoxy/gl.h>
 #include <fcntl.h>
@@ -27,7 +25,6 @@ struct _PwMediaStream
 {
   GtkMediaStream parent_instance;
 
-  GskGLShader *yuv_rgb_shader;
   GdkGLContext *gl_context;
   GdkPaintable *paintable;
 
@@ -154,21 +151,6 @@ spa_pixel_format_to_drm_format (uint32_t  spa_format,
   return TRUE;
 }
 
-static gboolean
-format_needs_yuv_conversion (PwMediaStream *self)
-{
-  switch (self->format.info.raw.format)
-    {
-    case SPA_VIDEO_FORMAT_AYUV:
-    case SPA_VIDEO_FORMAT_YUY2:
-      return TRUE;
-
-    default:
-      return FALSE;
-    }
-}
-
-
 /*
  * pw_stream
  */
@@ -187,6 +169,7 @@ on_process_cb (void *user_data)
   gboolean has_buffer;
   gboolean has_crop;
   uint32_t drm_format;
+  GError *error = NULL;
 
   /* Find the most recent buffer */
   b = NULL;
@@ -217,12 +200,8 @@ on_process_cb (void *user_data)
 
   if (buffer->datas[0].type == SPA_DATA_DmaBuf)
     {
-      uint32_t *offsets;
-      uint32_t *strides;
-      uint64_t *modifiers;
       uint32_t n_datas;
       unsigned int i;
-      int *fds;
 
       g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d",
                buffer->datas[0].fd, buffer->datas[0].chunk->stride,
@@ -237,29 +216,33 @@ on_process_cb (void *user_data)
         }
 
       n_datas = buffer->n_datas;
-      fds = g_alloca (sizeof (int) * n_datas);
-      offsets = g_alloca (sizeof (uint32_t) * n_datas);
-      strides = g_alloca (sizeof (uint32_t) * n_datas);
-      modifiers = g_alloca (sizeof (uint64_t) * n_datas);
+
+      GdkDmabufTextureBuilder *builder = gdk_dmabuf_texture_builder_new ();
+
+      gdk_dmabuf_texture_builder_set_display (builder, gdk_gl_context_get_display (self->gl_context));
+
+      gdk_dmabuf_texture_builder_set_width (builder, self->format.info.raw.size.width);
+      gdk_dmabuf_texture_builder_set_height (builder, self->format.info.raw.size.height);
+      gdk_dmabuf_texture_builder_set_fourcc (builder, drm_format);
+      gdk_dmabuf_texture_builder_set_modifier (builder, self->format.info.raw.modifier);
+      gdk_dmabuf_texture_builder_set_n_planes (builder, n_datas);
 
       for (i = 0; i < n_datas; i++)
         {
-          fds[i] = buffer->datas[i].fd;
-          offsets[i] = buffer->datas[i].chunk->offset;
-          strides[i] = buffer->datas[i].chunk->stride;
-          modifiers[i] = self->format.info.raw.modifier;
+          gdk_dmabuf_texture_builder_set_fd (builder, i, buffer->datas[i].fd);
+          gdk_dmabuf_texture_builder_set_stride (builder, i, buffer->datas[i].chunk->stride);
+          gdk_dmabuf_texture_builder_set_offset (builder, i, buffer->datas[i].chunk->offset);
         }
 
       g_clear_object (&self->paintable);
-      self->paintable = import_dmabuf_egl (self->gl_context,
-                                           drm_format,
-                                           self->format.info.raw.size.width,
-                                           self->format.info.raw.size.height,
-                                           n_datas,
-                                           fds,
-                                           strides,
-                                           offsets,
-                                           modifiers);
+      self->paintable = GDK_PAINTABLE (gdk_dmabuf_texture_builder_build (builder, NULL, NULL, &error));
+      if (error)
+        {
+          g_warning ("Creating texture failed: %s", error->message);
+          g_error_free (error);
+        }
+      g_object_unref (builder);
+
       invalidated = TRUE;
     }
   else
@@ -773,8 +756,6 @@ pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
 
   if (self->paintable)
     {
-      gboolean convert_yuv = format_needs_yuv_conversion (self);
-
       if (has_crop)
         {
           gtk_snapshot_save (snapshot);
@@ -787,21 +768,10 @@ pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
           gtk_snapshot_push_clip (snapshot,
                                   &GRAPHENE_RECT_INIT (0, 0, width, height));
 
-          if (convert_yuv)
-            gtk_snapshot_push_gl_shader (snapshot,
-                                         self->yuv_rgb_shader,
-                                         &GRAPHENE_RECT_INIT (0, 0, width, height),
-                                         gsk_gl_shader_format_args (self->yuv_rgb_shader, NULL));
-
           gdk_paintable_snapshot (self->paintable,
                                   snapshot,
                                   width,
                                   height);
-
-          if (convert_yuv)
-            {
-              gtk_snapshot_pop (snapshot);
-            }
 
           gtk_snapshot_pop (snapshot);
 
@@ -809,22 +779,10 @@ pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
         }
       else
         {
-          if (convert_yuv)
-            gtk_snapshot_push_gl_shader (snapshot,
-                                         self->yuv_rgb_shader,
-                                         &GRAPHENE_RECT_INIT (0, 0, width, height),
-                                         gsk_gl_shader_format_args (self->yuv_rgb_shader, NULL));
-
           gdk_paintable_snapshot (self->paintable,
                                   snapshot,
                                   width,
                                   height);
-
-          if (convert_yuv)
-            {
-              gtk_snapshot_gl_shader_pop_texture (snapshot);
-              gtk_snapshot_pop (snapshot);
-            }
         }
     }
 
@@ -1162,7 +1120,6 @@ pw_media_stream_init (PwMediaStream *self)
 {
   self->node_id = PW_ID_ANY;
   self->nodes = g_hash_table_new (NULL, NULL);
-  self->yuv_rgb_shader = gsk_gl_shader_new_from_resource ("/com/feaneron/example/PipeWireMediaStream/glsl/yuv2rgb.glsl");
 }
 
 GtkMediaStream *

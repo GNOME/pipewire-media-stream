@@ -3,8 +3,4 @@
   <gresource prefix="/com/feaneron/example/PipeWireMediaStream">
     <file>window.ui</file>
   </gresource>
-
-  <gresource prefix="/com/feaneron/example/PipeWireMediaStream/glsl">
-    <file>yuv2rgb.glsl</file>
-  </gresource>
 </gresources>
