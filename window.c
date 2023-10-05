@@ -109,7 +109,15 @@ on_camera_accessed (GObject      *source,
   self = PMS_WINDOW (user_data);
   fd = xdp_portal_open_pipewire_remote_for_camera (self->portal);
 
+  g_message ("fd: %d", fd);
+
   media_stream = pw_media_stream_new (fd, PW_ID_ANY, &error);
+  if (error)
+    {
+      g_warning ("Error creating camera stream: %s", error->message);
+      return;
+    }
+
   g_signal_connect (media_stream,
                     "select-node",
                     G_CALLBACK (on_media_stream_select_node_cb),

@@ -224,11 +224,14 @@ on_process_cb (void *user_data)
       unsigned int i;
       int *fds;
 
-      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d",
-               buffer->datas[0].fd, buffer->datas[0].chunk->stride,
+      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, mods: %d, (n_datas: %d)",
+               buffer->datas[0].fd,
+               buffer->datas[0].chunk->stride,
                buffer->datas[0].chunk->offset,
                self->format.info.raw.size.width,
-               self->format.info.raw.size.height);
+               self->format.info.raw.size.height,
+               self->format.info.raw.modifier,
+               buffer->n_datas);
 
       if (!spa_pixel_format_to_drm_format (self->format.info.raw.format, &drm_format))
         {
@@ -945,13 +948,10 @@ pw_media_stream_initable_init (GInitable     *initable,
       return FALSE;
     }
 
-  if (self->node_id != PW_ID_ANY)
-    self->core = pw_context_connect_fd (self->context,
-                                        fcntl (self->pipewire_fd, F_DUPFD_CLOEXEC, 5),
-                                        NULL,
-                                        0);
-  else
-    self->core = pw_context_connect (self->context, NULL, 0);
+  self->core = pw_context_connect_fd (self->context,
+                                      fcntl (self->pipewire_fd, F_DUPFD_CLOEXEC, 5),
+                                      NULL,
+                                      0);
 
   if (!self->core)
     {

@@ -6,7 +6,6 @@
     "command" : "pipewire-media-stream",
     "finish-args" : [
         "--device=dri",
-        "--filesystem=xdg-run/pipewire-0",
         "--share=network",
         "--share=ipc",
         "--socket=fallback-x11",
@@ -30,7 +29,7 @@
             "name" : "libportal",
             "buildsystem" : "meson",
             "config-opts" : [
-                "-Dbackends=gtk4",
+                "-Dbackend-gtk4=enabled",
                 "-Ddocs=false",
                 "-Dintrospection=false",
                 "-Dvapi=false",
