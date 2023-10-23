@@ -86,7 +86,10 @@ on_media_stream_select_node_cb (PwMediaStream *media_stream,
   g_main_loop_run (run_info.loop);
   g_clear_pointer (&run_info.loop, g_main_loop_unref);
 */
-  return node->node_id;
+  if (g_getenv ("CAMERA_NODE_ID"))
+    return atoi (g_getenv ("CAMERA_NODE_ID"));
+
+  return PW_ID_ANY;
 }
 
 static void
