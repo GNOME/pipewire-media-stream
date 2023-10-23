@@ -1,9 +1,6 @@
 #include "pw-media-stream.h"
 
-#include "dmabuf-import.h"
-
 #include <drm/drm_fourcc.h>
-#include <epoxy/egl.h>
 #include <epoxy/gl.h>
 #include <fcntl.h>
 #include <gtk/gtk.h>
@@ -13,50 +10,23 @@
 #include <spa/param/video/format-utils.h>
 #include <spa/utils/result.h>
 
-#ifdef GDK_WINDOWING_X11
-#include <gdk/x11/gdkx.h>
-#endif
-#ifdef GDK_WINDOWING_WAYLAND
-#include <gdk/wayland/gdkwayland.h>
-#endif
-
 #define CURSOR_META_SIZE(width, height) \
   (sizeof (struct spa_meta_cursor) + \
    sizeof (struct spa_meta_bitmap) + width * height * 4)
 
 typedef struct
 {
-  int major;
-  int minor;
-  int micro;
-} PmsPwVersion;
-
-typedef struct
-{
-  uint32_t spa_format;
-  uint32_t drm_format;
-  GArray *modifiers;
-} PmsFormat;
-
-typedef struct
-{
   GSource base;
 
   PwMediaStream *media_stream;
-  struct pw_loop *pipewire_loop;
 } PipeWireSource;
 
 struct _PwMediaStream
 {
   GtkMediaStream parent_instance;
 
-  PmsPwVersion server_version;
-  int server_version_sync;
-
   GdkGLContext *gl_context;
   GdkPaintable *paintable;
-
-  GArray *formats;
 
   uint32_t node_id;
   int pipewire_fd;
@@ -67,11 +37,14 @@ struct _PwMediaStream
   struct pw_core *core;
   struct spa_hook core_listener;
 
+  struct pw_main_loop *mainloop;
+  struct spa_hook registry_listener;
+  GHashTable *nodes;
+  int sync_seq;
+
   struct pw_stream *stream;
   struct spa_hook stream_listener;
   struct spa_video_info format;
-  struct spa_source *renegotiate_event;
-  gboolean connected;
 
   struct {
     gboolean valid;
@@ -96,6 +69,13 @@ enum
   N_PROPS
 };
 
+enum
+{
+  SELECT_NODE,
+  LAST_SIGNAL,
+};
+
+static guint signals[LAST_SIGNAL];
 static GParamSpec *properties [N_PROPS];
 
 static void pw_media_source_paintable_init (GdkPaintableInterface *iface);
@@ -112,326 +92,68 @@ G_DEFINE_TYPE_WITH_CODE (PwMediaStream, pw_media_stream, GTK_TYPE_MEDIA_STREAM,
  * Auxiliary methods
  */
 
-static inline gboolean
-parse_pipewire_version (PmsPwVersion *dest,
-                        const char   *version)
-{
-  return sscanf (version, "%d.%d.%d", &dest->major, &dest->minor, &dest->micro) == 3;
-}
-
-static inline gboolean
-check_pipewire_version (const PmsPwVersion *version,
-                        int                 major,
-                        int                 minor,
-                        int                 micro)
-{
-  if (version->major != major)
-    return version->major > major;
-  if (version->minor != minor)
-    return version->minor > minor;
-  return version->micro > micro;
-}
-
-static const struct {
-  uint32_t spa_format;
-  uint32_t drm_format;
-  GdkMemoryFormat gdk_format;
-  uint32_t bpp;
-  const char *name;
-} supported_formats[] = {
-  { SPA_VIDEO_FORMAT_BGRA, DRM_FORMAT_ARGB8888, GDK_MEMORY_B8G8R8A8, 4, "ARGB8888", },
-  { SPA_VIDEO_FORMAT_RGBA, DRM_FORMAT_ABGR8888, GDK_MEMORY_R8G8B8A8, 4, "ABGR8888", },
-  { SPA_VIDEO_FORMAT_BGRx, DRM_FORMAT_XRGB8888, GDK_MEMORY_B8G8R8A8, 4, "XRGB8888", },
-  { SPA_VIDEO_FORMAT_RGBx, DRM_FORMAT_XBGR8888, GDK_MEMORY_R8G8B8A8, 4, "XBGR8888", },
-};
-
 static gboolean
 spa_pixel_format_to_gdk_memory_format (uint32_t         spa_format,
                                        GdkMemoryFormat *out_format,
                                        uint32_t        *out_bpp)
 {
-  size_t i;
-
-  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
+  switch (spa_format)
     {
-      if (supported_formats[i].spa_format != spa_format)
-        continue;
+    case SPA_VIDEO_FORMAT_RGBA:
+    case SPA_VIDEO_FORMAT_RGBx:
+      *out_format = GDK_MEMORY_R8G8B8A8;
+      *out_bpp = 4;
+      break;
 
-      *out_format = supported_formats[i].gdk_format;
-      *out_bpp = supported_formats[i].bpp;
-      return TRUE;
+    case SPA_VIDEO_FORMAT_BGRA:
+    case SPA_VIDEO_FORMAT_BGRx:
+      *out_format = GDK_MEMORY_B8G8R8A8;
+      *out_bpp = 4;
+      break;
+
+    default:
+      return FALSE;
     }
 
-  return FALSE;
+  return TRUE;
 }
 
 static gboolean
 spa_pixel_format_to_drm_format (uint32_t  spa_format,
                                 uint32_t *out_format)
 {
-  size_t i;
-
-  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
+  switch (spa_format)
     {
-      if (supported_formats[i].spa_format != spa_format)
-        continue;
+    case SPA_VIDEO_FORMAT_RGBA:
+      *out_format = DRM_FORMAT_ABGR8888;
+      break;
 
-      *out_format = supported_formats[i].drm_format;
-      return TRUE;
+    case SPA_VIDEO_FORMAT_RGBx:
+      *out_format = DRM_FORMAT_XBGR8888;
+      break;
+
+    case SPA_VIDEO_FORMAT_BGRA:
+      *out_format = DRM_FORMAT_ARGB8888;
+      break;
+
+    case SPA_VIDEO_FORMAT_BGRx:
+      *out_format = DRM_FORMAT_XRGB8888;
+      break;
+
+    case SPA_VIDEO_FORMAT_YUY2:
+      *out_format = DRM_FORMAT_YUYV;
+      break;
+
+    case SPA_VIDEO_FORMAT_NV12:
+      *out_format = DRM_FORMAT_NV12;
+      break;
+
+    default:
+      return FALSE;
     }
 
-  return FALSE;
+  return TRUE;
 }
-
-static EGLDisplay
-get_egl_display_from_gl_context (GdkGLContext *gl_context)
-{
-  GdkDisplay *display;
-  EGLDisplay egl_display;
-
-  display = gdk_gl_context_get_display (gl_context);
-  egl_display = EGL_NO_DISPLAY;
-
-#ifdef GDK_WINDOWING_WAYLAND
-  if (GDK_IS_WAYLAND_DISPLAY (display))
-    egl_display = gdk_wayland_display_get_egl_display (display);
-#endif
-#ifdef GDK_WINDOWING_X11
-  if (GDK_IS_X11_DISPLAY (display))
-    egl_display = gdk_x11_display_get_egl_display (display);
-#endif
-
-  return egl_display;
-}
-
-static inline gboolean
-find_drm_format (uint32_t  drm_format,
-                 EGLint   *formats,
-                 EGLint    n_formats)
-{
-  size_t i;
-
-  for (i = 0; i < n_formats; i++)
-    {
-      if (formats[i] == drm_format)
-        return TRUE;
-    }
-
-  return FALSE;
-}
-
-static GArray *
-query_modifiers_for_format (EGLDisplay egl_display,
-                            uint32_t   drm_format)
-{
-  g_autoptr (GArray) modifiers = NULL;
-  EGLuint64KHR implicit_modifier;
-  EGLint n_modifiers;
-
-  eglQueryDmaBufModifiersEXT (egl_display, drm_format, 0, NULL, NULL, &n_modifiers);
-
-  modifiers = g_array_sized_new (FALSE, FALSE, sizeof (EGLuint64KHR), n_modifiers + 1);
-  eglQueryDmaBufModifiersEXT (egl_display,
-                              drm_format,
-                              n_modifiers,
-                              (EGLuint64KHR *)modifiers->data,
-                              NULL,
-                              &n_modifiers);
-
-  /* FIXME: assume we always support implicit modifiers for now */
-  implicit_modifier = DRM_FORMAT_MOD_INVALID;
-  g_array_append_val (modifiers, implicit_modifier);
-
-  return g_steal_pointer (&modifiers);
-}
-
-static void
-clear_format_func (PmsFormat *format)
-{
-  g_clear_pointer (&format->modifiers, g_array_unref);
-}
-
-static void
-query_formats_and_modifiers (PwMediaStream *self)
-{
-  g_autofree EGLint *egl_formats = NULL;
-  EGLDisplay egl_display;
-  EGLint n_egl_formats;
-  size_t i;
-
-  g_assert (self->gl_context != NULL);
-
-  egl_display = get_egl_display_from_gl_context (self->gl_context);
-  eglQueryDmaBufFormatsEXT (egl_display, 0, NULL, &n_egl_formats);
-
-  egl_formats = g_new (EGLint, n_egl_formats);
-  eglQueryDmaBufFormatsEXT (egl_display, n_egl_formats, egl_formats, &n_egl_formats);
-
-  g_clear_pointer (&self->formats, g_array_unref);
-  self->formats = g_array_sized_new (FALSE, FALSE, sizeof (PmsFormat), n_egl_formats);
-  g_array_set_clear_func (self->formats, (GDestroyNotify) clear_format_func);
-
-  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
-    {
-      PmsFormat format;
-
-      if (!find_drm_format (supported_formats[i].drm_format, egl_formats, n_egl_formats))
-        continue;
-
-      format.spa_format = supported_formats[i].spa_format;
-      format.drm_format = supported_formats[i].drm_format;
-      format.modifiers = query_modifiers_for_format (egl_display,
-                                                     supported_formats[i].drm_format);
-
-      g_debug ("EGLDisplay supports format %s (%u modifiers)",
-               supported_formats[i].name,
-               format.modifiers->len);
-
-      g_array_append_val (self->formats, format);
-    }
-}
-
-static void
-remove_modifier_from_format (PwMediaStream *self,
-                             uint32_t       spa_format,
-                             uint64_t       modifier)
-{
-  size_t i;
-
-  for (i = 0; i < self->formats->len; i++)
-    {
-      const PmsFormat *format = &g_array_index (self->formats, PmsFormat, i);
-
-      if (format->spa_format != spa_format)
-        continue;
-
-      if (check_pipewire_version (&self->server_version, 0, 3, 40))
-        {
-          int64_t j;
-
-          for (j = 0; j < format->modifiers->len; j++)
-            {
-              if (g_array_index (format->modifiers, uint64_t, j) == modifier)
-                g_array_remove_index_fast (format->modifiers, j--);
-            }
-        }
-      else
-        {
-          /* Remove all modifiers */
-          g_array_set_size (format->modifiers, 0);
-        }
-    }
-}
-
-static inline struct spa_pod *
-build_format_param (PwMediaStream          *self,
-                    struct spa_pod_builder *builder,
-                    const PmsFormat        *format,
-                    gboolean                build_modifiers)
-{
-  struct spa_pod_frame object_frame;
-
-  spa_pod_builder_push_object (builder, &object_frame, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
-  spa_pod_builder_add (builder, SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video), 0);
-  spa_pod_builder_add (builder, SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw), 0);
-  spa_pod_builder_add (builder, SPA_FORMAT_VIDEO_format, SPA_POD_Id (format->spa_format), 0);
-
-  if (build_modifiers && format->modifiers->len > 0)
-    {
-      struct spa_pod_frame modifiers_frame;
-      uint32_t i;
-
-      spa_pod_builder_prop (builder,
-                            SPA_FORMAT_VIDEO_modifier,
-                            SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE);
-
-      spa_pod_builder_push_choice (builder, &modifiers_frame, SPA_CHOICE_Enum, 0);
-      spa_pod_builder_long (builder, g_array_index (format->modifiers, uint64_t, 0));
-      for (i = 0; i < format->modifiers->len; i++)
-        spa_pod_builder_long (builder, g_array_index (format->modifiers, uint64_t, i));
-      spa_pod_builder_pop (builder, &modifiers_frame);
-    }
-
-  spa_pod_builder_add (builder,
-                       SPA_FORMAT_VIDEO_size,
-                       SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
-                                                       &SPA_RECTANGLE(1, 1),
-                                                       &SPA_RECTANGLE(8192, 4320)),
-                       0);
-
-  return spa_pod_builder_pop (builder, &object_frame);
-}
-
-static GPtrArray *
-build_stream_format_params (PwMediaStream          *self,
-                            struct spa_pod_builder *builder)
-{
-  g_autoptr (GPtrArray) params = NULL;
-  uint32_t i;
-
-  g_assert (self->formats != NULL);
-
-  params = g_ptr_array_sized_new (2 * self->formats->len);
-
-  for (i = 0; i < self->formats->len; i++)
-    {
-      const PmsFormat *format = &g_array_index (self->formats, PmsFormat, i);
-
-      if (check_pipewire_version (&self->server_version, 0, 3, 33))
-        g_ptr_array_add (params, build_format_param (self, builder, format, TRUE));
-
-      g_ptr_array_add (params, build_format_param (self, builder, format, FALSE));
-    }
-
-  return g_steal_pointer (&params);
-}
-
-static void
-renegotiate_stream_format (void     *user_data,
-                           uint64_t  expirations)
-{
-  g_autoptr (GPtrArray) new_params = NULL;
-  struct spa_pod_builder builder;
-  PwMediaStream *self = user_data;
-  uint8_t params_buffer[2048];
-
-  builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
-  new_params = build_stream_format_params (self, &builder);
-
-  pw_stream_update_params (self->stream,
-                           (const struct spa_pod **)new_params->pdata,
-                           new_params->len);
-}
-
-static void
-connect_stream (PwMediaStream *self)
-{
-  g_autoptr (GPtrArray) params = NULL;
-  struct spa_pod_builder builder;
-  uint8_t params_buffer[2048];
-  int result;
-
-  g_assert (self->gl_context != NULL);
-
-  if (self->connected)
-    return;
-
-  builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
-  params = build_stream_format_params (self, &builder);
-
-  result = pw_stream_connect (self->stream,
-                              PW_DIRECTION_INPUT,
-                              self->node_id,
-                              PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
-                              (const struct spa_pod **)params->pdata,
-                              params->len);
-
-  if (result != 0)
-    g_warning ("Could not connect: %s", spa_strerror (result));
-
-  self->connected = TRUE;
-}
-
 
 /*
  * pw_stream
@@ -451,6 +173,7 @@ on_process_cb (void *user_data)
   gboolean has_buffer;
   gboolean has_crop;
   uint32_t drm_format;
+  GError *error = NULL;
 
   /* Find the most recent buffer */
   b = NULL;
@@ -481,20 +204,14 @@ on_process_cb (void *user_data)
 
   if (buffer->datas[0].type == SPA_DATA_DmaBuf)
     {
-      gboolean use_modifiers;
-      uint32_t *offsets;
-      uint32_t *strides;
-      uint64_t *modifiers;
       uint32_t n_datas;
       unsigned int i;
-      int *fds;
 
-      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, modifier:%lu",
+      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d",
                buffer->datas[0].fd, buffer->datas[0].chunk->stride,
                buffer->datas[0].chunk->offset,
                self->format.info.raw.size.width,
-               self->format.info.raw.size.height,
-               self->format.info.raw.modifier);
+               self->format.info.raw.size.height);
 
       if (!spa_pixel_format_to_drm_format (self->format.info.raw.format, &drm_format))
         {
@@ -503,38 +220,32 @@ on_process_cb (void *user_data)
         }
 
       n_datas = buffer->n_datas;
-      fds = g_alloca (sizeof (int) * n_datas);
-      offsets = g_alloca (sizeof (uint32_t) * n_datas);
-      strides = g_alloca (sizeof (uint32_t) * n_datas);
-      modifiers = g_alloca (sizeof (uint64_t) * n_datas);
+
+      GdkDmabufTextureBuilder *builder = gdk_dmabuf_texture_builder_new ();
+
+      gdk_dmabuf_texture_builder_set_display (builder, gdk_gl_context_get_display (self->gl_context));
+
+      gdk_dmabuf_texture_builder_set_width (builder, self->format.info.raw.size.width);
+      gdk_dmabuf_texture_builder_set_height (builder, self->format.info.raw.size.height);
+      gdk_dmabuf_texture_builder_set_fourcc (builder, drm_format);
+      gdk_dmabuf_texture_builder_set_modifier (builder, self->format.info.raw.modifier);
+      gdk_dmabuf_texture_builder_set_n_planes (builder, n_datas);
 
       for (i = 0; i < n_datas; i++)
         {
-          fds[i] = buffer->datas[i].fd;
-          offsets[i] = buffer->datas[i].chunk->offset;
-          strides[i] = buffer->datas[i].chunk->stride;
-          modifiers[i] = self->format.info.raw.modifier;
+          gdk_dmabuf_texture_builder_set_fd (builder, i, buffer->datas[i].fd);
+          gdk_dmabuf_texture_builder_set_stride (builder, i, buffer->datas[i].chunk->stride);
+          gdk_dmabuf_texture_builder_set_offset (builder, i, buffer->datas[i].chunk->offset);
         }
 
-      use_modifiers = self->format.info.raw.modifier != DRM_FORMAT_MOD_INVALID;
-
       g_clear_object (&self->paintable);
-      self->paintable = import_dmabuf_egl (self->gl_context,
-                                           drm_format,
-                                           self->format.info.raw.size.width,
-                                           self->format.info.raw.size.height,
-                                           n_datas,
-                                           fds,
-                                           strides,
-                                           offsets,
-                                           use_modifiers ? modifiers : NULL);
+      self->paintable = GDK_PAINTABLE (gdk_dmabuf_texture_builder_build (builder, NULL, NULL, &error));
+      g_object_unref (builder);
 
-      if (!self->paintable)
+      if (error)
         {
-          remove_modifier_from_format (self,
-                                       self->format.info.raw.format,
-                                       self->format.info.raw.modifier);
-          pw_loop_signal_event (self->source->pipewire_loop, self->renegotiate_event);
+          g_warning ("%s", error->message);
+          g_error_free (error);
         }
 
       invalidated = TRUE;
@@ -677,7 +388,6 @@ on_param_changed_cb (void                 *user_data,
   PwMediaStream *self = user_data;
   const struct spa_pod *params[3];
   uint8_t params_buffer[1024];
-  int buffer_types;
   int result;
 
   if (!param || id != SPA_PARAM_Format)
@@ -727,19 +437,12 @@ on_param_changed_cb (void                 *user_data,
                                                    CURSOR_META_SIZE (1024, 1024)));
 
   /* Buffer options */
-  buffer_types = 1 << SPA_DATA_MemPtr;
-
-  if (check_pipewire_version (&self->server_version, 0, 3, 24) ||
-      spa_pod_find_prop (param, NULL, SPA_FORMAT_VIDEO_modifier) != NULL)
-    {
-      buffer_types |= 1 << SPA_DATA_DmaBuf;
-    }
-
   params[2] = spa_pod_builder_add_object (
     &pod_builder,
     SPA_TYPE_OBJECT_ParamBuffers,
     SPA_PARAM_Buffers,
-    SPA_PARAM_BUFFERS_dataType, SPA_POD_Int (buffer_types));
+    SPA_PARAM_BUFFERS_dataType, SPA_POD_Int ((1 << SPA_DATA_MemPtr) |
+                                             (1 << SPA_DATA_DmaBuf)));
 
   pw_stream_update_params (self->stream, params, 3);
 }
@@ -770,17 +473,6 @@ static const struct pw_stream_events stream_events = {
 };
 
 static void
-on_core_done_cb (void     *user_data,
-                 uint32_t  id,
-                 int       seq)
-{
-  PwMediaStream *self = user_data;
-
-  if (id == PW_ID_CORE && self->server_version_sync == seq)
-    self->server_version_sync = -1;
-}
-
-static void
 on_core_error_cb (void       *user_data,
                   uint32_t    id,
                   int         seq,
@@ -798,24 +490,169 @@ on_core_error_cb (void       *user_data,
                           message);
 }
 
+static gboolean connect_stream (PwMediaStream  *self,
+                                uint32_t        node_id,
+                                GError        **error);
 static void
-on_core_info_cb (void                      *user_data,
-                 const struct pw_core_info *info)
+on_core_done_cb (void     *user_data,
+                 uint32_t  id,
+                 int       seq)
 {
   PwMediaStream *self = user_data;
 
-  g_message ("PipeWire server version: %s", info->version);
+  g_message ("Core done (%d, %d, %d)",
+             id == PW_ID_CORE,
+             self->sync_seq,
+             seq);
 
-  if (!parse_pipewire_version (&self->server_version, info->version))
-    g_warning ("Failed to parse PipeWire version");
+  if (id == PW_ID_CORE && self->sync_seq == seq)
+    {
+      g_autoptr (GError) error = NULL;
+      g_autoptr (GList) nodes = NULL;
+      uint32_t selected_node_id;
+
+      g_message ("Selecting nodes (%p, %d)",
+                 self,
+                 g_signal_handler_is_connected (self, signals[SELECT_NODE]));
+
+      nodes = g_hash_table_get_values (self->nodes);
+      g_signal_emit (self,
+                     signals[SELECT_NODE],
+                     0,
+                     nodes,
+                     &selected_node_id);
+
+      g_message ("Selected node: %u", selected_node_id);
+
+      connect_stream (self, selected_node_id, &error);
+    }
 }
 
 static const struct pw_core_events core_events = {
   PW_VERSION_CORE_EVENTS,
   .done = on_core_done_cb,
   .error = on_core_error_cb,
-  .info = on_core_info_cb,
 };
+
+static gboolean
+connect_stream (PwMediaStream  *self,
+                uint32_t        node_id,
+                GError        **error)
+{
+  struct spa_pod_builder pod_builder;
+  const struct spa_pod *params[1];
+  uint8_t params_buffer[1024];
+  int result;
+
+  /* Stream */
+  self->stream = pw_stream_new (self->core,
+                                "PwMediaStream",
+                                pw_properties_new (PW_KEY_MEDIA_TYPE, "Video",
+                                                   PW_KEY_MEDIA_CATEGORY, "Capture",
+                                                   PW_KEY_MEDIA_ROLE, "Screen",
+                                                   NULL));
+
+  pw_stream_add_listener (self->stream,
+                          &self->stream_listener,
+                          &stream_events,
+                          self);
+
+  pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
+  params[0] = spa_pod_builder_add_object (
+    &pod_builder,
+    SPA_TYPE_OBJECT_Format,
+    SPA_PARAM_EnumFormat,
+    SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video),
+    SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw),
+    SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id (5,
+                                                     SPA_VIDEO_FORMAT_BGRA,
+                                                     SPA_VIDEO_FORMAT_RGBA,
+                                                     SPA_VIDEO_FORMAT_BGRx,
+                                                     SPA_VIDEO_FORMAT_RGBx,
+                                                     SPA_VIDEO_FORMAT_YUY2),
+    SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
+                                                           &SPA_RECTANGLE(1, 1),
+                                                           &SPA_RECTANGLE(8192, 4320)));
+  if (!self->stream)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Couldn't connect PipeWire stream");
+      return FALSE;
+    }
+
+  result = pw_stream_connect (self->stream,
+                              PW_DIRECTION_INPUT,
+                              node_id,
+                              PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+                              params, 1);
+
+  if (result != 0)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Could not connect: %s", spa_strerror (result));
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+static void
+on_registry_event_global (void                  *user_data,
+                          uint32_t               id,
+                          uint32_t               permissions,
+                          const char            *type,
+                          uint32_t               version,
+                          const struct spa_dict *props)
+{
+  PwMediaStreamNode *stream_node;
+  PwMediaStream *self = user_data;
+
+  if (g_strcmp0 (type, PW_TYPE_INTERFACE_Node) != 0 ||
+      g_strcmp0 (spa_dict_lookup (props, "media.class"), "Video/Source") != 0 ||
+      g_strcmp0 (spa_dict_lookup (props, "media.role"), "Camera") != 0)
+    {
+      return;
+    }
+
+  g_message ("Global event (%s, %u)", type, id);
+
+  stream_node = g_new0 (PwMediaStreamNode, 1);
+  stream_node->node_id = id;
+  stream_node->description = g_strdup (spa_dict_lookup (props, "node.description"));
+  g_hash_table_insert (self->nodes, GUINT_TO_POINTER (id), stream_node);
+  g_message ("  Added %u (nodes: %d)", id, g_hash_table_size (self->nodes));
+}
+
+static void
+on_registry_event_global_remove (void     *object,
+                                 uint32_t  id)
+{
+}
+
+static const struct pw_registry_events registry_events = {
+  PW_VERSION_REGISTRY_EVENTS,
+  .global = on_registry_event_global,
+  .global_remove = on_registry_event_global_remove,
+};
+
+static gboolean
+select_node (PwMediaStream  *self,
+             GError        **error)
+{
+  struct pw_registry *registry;
+
+  g_message ("Selecting node");
+
+  registry = pw_core_get_registry (self->core, PW_VERSION_REGISTRY, 0);
+  pw_registry_add_listener (registry,
+                            &self->registry_listener,
+                            &registry_events,
+                            self);
+
+  self->sync_seq = pw_core_sync (self->core, PW_ID_CORE, self->sync_seq);
+
+  return TRUE;
+}
 
 
 /*
@@ -836,9 +673,12 @@ pipewire_loop_source_dispatch (GSource     *source,
                                gpointer     user_data)
 {
   PipeWireSource *pw_source = (PipeWireSource *) source;
+  struct pw_loop *loop;
   int result;
 
-  result = pw_loop_iterate (pw_source->pipewire_loop, 0);
+
+  loop = pw_main_loop_get_loop (pw_source->media_stream->mainloop);
+  result = pw_loop_iterate (loop, 0);
   if (result < 0)
     g_warning ("pipewire_loop_iterate failed: %s", spa_strerror (result));
 
@@ -849,9 +689,10 @@ static void
 pipewire_loop_source_finalize (GSource *source)
 {
   PipeWireSource *pw_source = (PipeWireSource *) source;
+  struct pw_loop *loop;
 
-  pw_loop_leave (pw_source->pipewire_loop);
-  pw_loop_destroy (pw_source->pipewire_loop);
+  loop = pw_main_loop_get_loop (pw_source->media_stream->mainloop);
+  pw_loop_leave (loop);
 }
 
 static GSourceFuncs pw_source_funcs =
@@ -868,22 +709,18 @@ static PipeWireSource *
 create_pipewire_source (PwMediaStream *self)
 {
   PipeWireSource *pw_source;
+  struct pw_loop *loop;
 
   pw_source = (PipeWireSource *) g_source_new (&pw_source_funcs,
                                                sizeof (PipeWireSource));
   pw_source->media_stream = self;
-  pw_source->pipewire_loop = pw_loop_new (NULL);
-  if (!pw_source->pipewire_loop)
-    {
-      g_source_unref ((GSource *) pw_source);
-      return NULL;
-    }
 
+  loop = pw_main_loop_get_loop (self->mainloop);
   g_source_add_unix_fd (&pw_source->base,
-                        pw_loop_get_fd (pw_source->pipewire_loop),
+                        pw_loop_get_fd (loop),
                         G_IO_IN | G_IO_ERR);
 
-  pw_loop_enter (pw_source->pipewire_loop);
+  pw_loop_enter (loop);
   g_source_attach (&pw_source->base, NULL);
 
   return pw_source;
@@ -906,9 +743,9 @@ has_effective_crop (PwMediaStream *self)
 
 static void
 pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
-                                     GdkSnapshot  *snapshot,
-                                     double        width,
-                                     double        height)
+                                    GdkSnapshot  *snapshot,
+                                    double        width,
+                                    double        height)
 {
   PwMediaStream *self = PW_MEDIA_STREAM (paintable);
   gboolean has_crop;
@@ -935,10 +772,12 @@ pw_media_stream_paintable_snapshot (GdkPaintable *paintable,
 
           gtk_snapshot_push_clip (snapshot,
                                   &GRAPHENE_RECT_INIT (0, 0, width, height));
+
           gdk_paintable_snapshot (self->paintable,
                                   snapshot,
                                   width,
                                   height);
+
           gtk_snapshot_pop (snapshot);
 
           gtk_snapshot_restore (snapshot);
@@ -1042,6 +881,15 @@ pw_media_stream_initable_init (GInitable     *initable,
                                GError       **error)
 {
   PwMediaStream *self = PW_MEDIA_STREAM (initable);
+  struct pw_loop *loop;
+
+  self->mainloop = pw_main_loop_new (NULL);
+  if (!self->mainloop)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Failed to create PipeWire main loop");
+      return FALSE;
+    }
 
   self->source = create_pipewire_source (self);
   if (!self->source)
@@ -1051,7 +899,8 @@ pw_media_stream_initable_init (GInitable     *initable,
       return FALSE;
     }
 
-  self->context = pw_context_new (self->source->pipewire_loop, NULL, 0);
+  loop = pw_main_loop_get_loop (self->mainloop);
+  self->context = pw_context_new (loop, NULL, 0);
   if (!self->source)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -1059,10 +908,14 @@ pw_media_stream_initable_init (GInitable     *initable,
       return FALSE;
     }
 
-  self->core = pw_context_connect_fd (self->context,
-                                      fcntl (self->pipewire_fd, F_DUPFD_CLOEXEC, 5),
-                                      NULL,
-                                      0);
+  if (self->node_id != PW_ID_ANY)
+    self->core = pw_context_connect_fd (self->context,
+                                        fcntl (self->pipewire_fd, F_DUPFD_CLOEXEC, 5),
+                                        NULL,
+                                        0);
+  else
+    self->core = pw_context_connect (self->context, NULL, 0);
+
   if (!self->core)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -1075,39 +928,10 @@ pw_media_stream_initable_init (GInitable     *initable,
                         &core_events,
                         self);
 
-  self->renegotiate_event = pw_loop_add_event (self->source->pipewire_loop,
-                                               renegotiate_stream_format,
-                                               self);
-
-  /* Fetch the server version */
-  self->server_version_sync = pw_core_sync (self->core,
-                                            PW_ID_CORE,
-                                            self->server_version_sync);
-
-  while (self->server_version_sync != -1)
-    g_main_context_iteration (NULL, TRUE);
-
-  /* Stream */
-  self->stream = pw_stream_new (self->core,
-                                "PwMediaStream",
-                                pw_properties_new (PW_KEY_MEDIA_TYPE, "Video",
-                                                   PW_KEY_MEDIA_CATEGORY, "Capture",
-                                                   PW_KEY_MEDIA_ROLE, "Screen",
-                                                   NULL));
-
-  if (!self->stream)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Couldn't connect PipeWire stream");
-      return FALSE;
-    }
-
-  pw_stream_add_listener (self->stream,
-                          &self->stream_listener,
-                          &stream_events,
-                          self);
-
-  return TRUE;
+  if (self->node_id != PW_ID_ANY)
+    return connect_stream (self, self->node_id, error);
+  else
+    return select_node (self, error);
 }
 
 static void
@@ -1166,9 +990,6 @@ pw_media_stream_realize (GtkMediaStream *media_stream,
       g_clear_object (&self->gl_context);
       return;
     }
-
-  query_formats_and_modifiers (self);
-  connect_stream (self);
 }
 
 static void
@@ -1194,7 +1015,7 @@ pw_media_stream_dispose (GObject *object)
 {
   PwMediaStream *self = (PwMediaStream *)object;
 
-  g_clear_pointer (&self->formats, g_array_unref);
+  g_message ("Disposing");
 
   if (self->stream)
     pw_stream_disconnect (self->stream);
@@ -1254,7 +1075,7 @@ pw_media_stream_set_property (GObject      *object,
       break;
 
     case PROP_NODE_ID:
-      g_assert (self->node_id == 0);
+      g_assert (self->node_id == PW_ID_ANY);
       self->node_id = g_value_get_uint (value);
       break;
 
@@ -1278,6 +1099,14 @@ pw_media_stream_class_init (PwMediaStreamClass *klass)
   media_stream_class->realize = pw_media_stream_realize;
   media_stream_class->unrealize = pw_media_stream_unrealize;
 
+  signals[SELECT_NODE] = g_signal_new ("select-node",
+                                       G_TYPE_FROM_CLASS (object_class),
+                                       G_SIGNAL_RUN_FIRST,
+                                       0, NULL, NULL, NULL,
+                                       G_TYPE_UINT,
+                                       1,
+                                       G_TYPE_POINTER);
+
   properties[PROP_PIPEWIRE_FD] =
     g_param_spec_int ("pipewire-fd", "", "",
                       0, G_MAXINT, 0,
@@ -1285,7 +1114,7 @@ pw_media_stream_class_init (PwMediaStreamClass *klass)
 
   properties[PROP_NODE_ID] =
     g_param_spec_uint ("node-id", "", "",
-                       0, G_MAXINT, 0,
+                       0, G_MAXUINT32, PW_ID_ANY,
                        G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (object_class, N_PROPS, properties);
@@ -1294,6 +1123,8 @@ pw_media_stream_class_init (PwMediaStreamClass *klass)
 static void
 pw_media_stream_init (PwMediaStream *self)
 {
+  self->node_id = PW_ID_ANY;
+  self->nodes = g_hash_table_new (NULL, NULL);
 }
 
 GtkMediaStream *

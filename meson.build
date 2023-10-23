@@ -1,14 +1,14 @@
-project(
-  'pipewire-media-stream',
-  'c',
-  version: '0.1.0',
-  meson_version: '>= 0.50.0',
+project('pipewire-media-stream', 'c',
+          version: '0.1.0',
+    meson_version: '>= 0.50.0',
+  default_options: [ 'warning_level=2',
+                     'c_std=gnu11',
+                   ],
 )
 
 gnome = import('gnome')
 
 sources = [
-  'dmabuf-import.c',
   'pw-media-stream.c',
   'window.c',
   'main.c',
@@ -17,6 +17,7 @@ sources = [
 deps = [
   dependency('epoxy'),
   dependency('libadwaita-1'),
+  dependency('libportal'),
   dependency('libportal-gtk4'),
   dependency('libpipewire-0.3', version: '>= 0.3.20'),
   dependency('gtk4', version: '>= 4.2'),
