@@ -540,7 +540,7 @@ connect_stream (PwMediaStream  *self,
                 GError        **error)
 {
   struct spa_pod_builder pod_builder;
-  const struct spa_pod *params[1];
+  const struct spa_pod *params[30];
   uint8_t params_buffer[1024];
   int result;
 
@@ -557,22 +557,39 @@ connect_stream (PwMediaStream  *self,
                           &stream_events,
                           self);
 
+  GdkDisplay *display = gdk_display_get_default ();
+  GdkDmabufFormats *formats = gdk_display_get_dmabuf_formats (display);
+  g_print ("display has %lu formats\n", gdk_dmabuf_formats_get_n_formats (formats));
+
   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
-  params[0] = spa_pod_builder_add_object (
-    &pod_builder,
-    SPA_TYPE_OBJECT_Format,
-    SPA_PARAM_EnumFormat,
-    SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video),
-    SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw),
-    SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id (5,
-                                                     SPA_VIDEO_FORMAT_BGRA,
-                                                     SPA_VIDEO_FORMAT_RGBA,
-                                                     SPA_VIDEO_FORMAT_BGRx,
-                                                     SPA_VIDEO_FORMAT_RGBx,
-                                                     SPA_VIDEO_FORMAT_YUY2),
-    SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
-                                                           &SPA_RECTANGLE(1, 1),
-                                                           &SPA_RECTANGLE(8192, 4320)));
+
+  struct spa_pod_frame f;
+  spa_pod_builder_push_object (&pod_builder, &f, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
+  spa_pod_builder_add (&pod_builder, SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video), 0);
+  spa_pod_builder_add (&pod_builder, SPA_FORMAT_mediaSubtype, SPA_POD_Id (SPA_MEDIA_SUBTYPE_raw), 0);
+  struct spa_pod_frame f2;
+  spa_pod_builder_prop (&pod_builder, SPA_FORMAT_VIDEO_modifier, SPA_POD_PROP_FLAG_MANDATORY|SPA_POD_PROP_FLAG_DONT_FIXATE);
+  spa_pod_builder_push_choice (&pod_builder, &f2, SPA_CHOICE_Enum, 0);
+  for (gsize i = 0; i < gdk_dmabuf_formats_get_n_formats (formats); i++)
+    {
+      guint32 fmt;
+      guint64 mod;
+      gdk_dmabuf_formats_get_format (formats, i, &fmt, &mod);
+      if (fmt == DRM_FORMAT_YUYV)
+        {
+          g_print ("adding format %.4s:%#lx\n", (char *)&fmt, mod);
+          spa_pod_builder_long (&pod_builder, mod);
+        }
+    }
+  spa_pod_builder_long (&pod_builder, DRM_FORMAT_MOD_INVALID);
+  spa_pod_builder_pop (&pod_builder, &f2);
+  spa_pod_builder_add (&pod_builder, SPA_FORMAT_VIDEO_format, SPA_POD_Id (SPA_VIDEO_FORMAT_YUY2), 0);
+  spa_pod_builder_add (&pod_builder, SPA_FORMAT_VIDEO_size,
+                       SPA_POD_CHOICE_RANGE_Rectangle (&SPA_RECTANGLE(320, 240), // Arbitrary
+                                                       &SPA_RECTANGLE(1, 1),
+                                                       &SPA_RECTANGLE(8192, 4320)), 0);
+  params[0] = spa_pod_builder_pop (&pod_builder, &f);
+
   if (!self->stream)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
