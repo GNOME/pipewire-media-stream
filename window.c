@@ -4,6 +4,7 @@
 
 #include <libportal/portal.h>
 #include <libportal-gtk4/portal-gtk4.h>
+#include <pipewire/pipewire.h>
 
 struct _PmsWindow
 {
@@ -18,6 +19,51 @@ struct _PmsWindow
 };
 
 G_DEFINE_TYPE (PmsWindow, pms_window, ADW_TYPE_APPLICATION_WINDOW)
+
+
+static void
+on_camera_accessed (GObject      *source,
+                    GAsyncResult *result,
+                    gpointer      user_data)
+{
+  g_autoptr (GtkMediaStream) media_stream = NULL;
+  g_autoptr (GError) error = NULL;
+  PmsWindow *self;
+  int fd;
+
+  xdp_portal_access_camera_finish (XDP_PORTAL (source), result, &error);
+  if (error)
+    {
+      g_warning ("Error creating screencast session: %s", error->message);
+      return;
+    }
+
+  self = PMS_WINDOW (user_data);
+  gtk_stack_set_visible_child_name (self->stack, "video");
+
+  self = PMS_WINDOW (user_data);
+  fd = xdp_portal_open_pipewire_remote_for_camera (self->portal);
+
+  media_stream = pw_media_stream_new (fd, PW_ID_ANY, &error);
+  gtk_video_set_media_stream (self->video, media_stream);
+}
+
+static void
+on_select_webcam_button_clicked_cb (GtkButton *button,
+                                    PmsWindow *self)
+{
+  XdpParent *parent;
+
+  parent = xdp_parent_new_gtk (GTK_WINDOW (self));
+
+  xdp_portal_access_camera (self->portal,
+                            parent,
+                            XDP_CAMERA_FLAG_NONE,
+                            self->cancellable,
+                            on_camera_accessed,
+                            self);
+  xdp_parent_free (parent);
+}
 
 static void
 on_session_closed_cb (XdpSession *session,
@@ -162,6 +208,7 @@ pms_window_class_init (PmsWindowClass *klass)
   gtk_widget_class_bind_template_child (widget_class, PmsWindow, video);
   gtk_widget_class_bind_template_callback (widget_class, on_go_previous_button_clicked_cb);
   gtk_widget_class_bind_template_callback (widget_class, on_start_screencast_button_clicked_cb);
+  gtk_widget_class_bind_template_callback (widget_class, on_select_webcam_button_clicked_cb);
 }
 
 static void

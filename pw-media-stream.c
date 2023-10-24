@@ -392,6 +392,15 @@ connect_stream (PwMediaStream *self)
 }
 
 
+static void
+select_node (PwMediaStream *self)
+{
+  g_print ("in select node\n");
+
+  self->node_id = 44;
+  connect_stream (self);
+}
+
 /*
  * pw_stream
  */
@@ -1119,7 +1128,11 @@ pw_media_stream_realize (GtkMediaStream *media_stream,
     }
 
   query_formats_and_modifiers (self);
-  connect_stream (self);
+
+  if (self->node_id != PW_ID_ANY)
+    connect_stream (self);
+  else
+    select_node (self);
 }
 
 static void
