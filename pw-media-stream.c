@@ -489,7 +489,7 @@ on_process_cb (void *user_data)
       unsigned int i;
       int *fds;
 
-      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, modifier:%lu",
+      g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, modifier:%#lx",
                buffer->datas[0].fd, buffer->datas[0].chunk->stride,
                buffer->datas[0].chunk->offset,
                self->format.info.raw.size.width,
@@ -501,6 +501,8 @@ on_process_cb (void *user_data)
           g_critical ("Unsupported DMA buffer format: %d", self->format.info.raw.format);
           goto read_metadata;
         }
+
+      g_debug ("DMA buffer format: %.4s", (char *) &drm_format);
 
       n_datas = buffer->n_datas;
       fds = g_alloca (sizeof (int) * n_datas);
