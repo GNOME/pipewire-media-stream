@@ -1,7 +1,5 @@
 #include "pw-media-stream.h"
 
-#include "dmabuf-import.h"
-
 #include <drm/drm_fourcc.h>
 #include <epoxy/egl.h>
 #include <epoxy/gl.h>
@@ -481,13 +479,8 @@ on_process_cb (void *user_data)
 
   if (buffer->datas[0].type == SPA_DATA_DmaBuf)
     {
-      gboolean use_modifiers;
-      uint32_t *offsets;
-      uint32_t *strides;
-      uint64_t *modifiers;
-      uint32_t n_datas;
-      unsigned int i;
-      int *fds;
+      GdkDmabufTextureBuilder *builder;
+      GError *error = NULL;
 
       g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, modifier:%#lx",
                buffer->datas[0].fd, buffer->datas[0].chunk->stride,
@@ -504,35 +497,30 @@ on_process_cb (void *user_data)
 
       g_debug ("DMA buffer format: %.4s", (char *) &drm_format);
 
-      n_datas = buffer->n_datas;
-      fds = g_alloca (sizeof (int) * n_datas);
-      offsets = g_alloca (sizeof (uint32_t) * n_datas);
-      strides = g_alloca (sizeof (uint32_t) * n_datas);
-      modifiers = g_alloca (sizeof (uint64_t) * n_datas);
+      builder = gdk_dmabuf_texture_builder_new ();
+      gdk_dmabuf_texture_builder_set_display (builder, gdk_display_get_default ());
+      gdk_dmabuf_texture_builder_set_width (builder, self->format.info.raw.size.width);
+      gdk_dmabuf_texture_builder_set_height (builder, self->format.info.raw.size.height);
+      gdk_dmabuf_texture_builder_set_fourcc (builder, drm_format);
+      gdk_dmabuf_texture_builder_set_modifier (builder, self->format.info.raw.modifier);
+      gdk_dmabuf_texture_builder_set_n_planes (builder, buffer->n_datas);
 
-      for (i = 0; i < n_datas; i++)
+      for (gsize i = 0; i < buffer->n_datas; i++)
         {
-          fds[i] = buffer->datas[i].fd;
-          offsets[i] = buffer->datas[i].chunk->offset;
-          strides[i] = buffer->datas[i].chunk->stride;
-          modifiers[i] = self->format.info.raw.modifier;
+          gdk_dmabuf_texture_builder_set_fd (builder, i, buffer->datas[i].fd);
+          gdk_dmabuf_texture_builder_set_offset (builder, i, buffer->datas[i].chunk->offset);
+          gdk_dmabuf_texture_builder_set_stride (builder, i, buffer->datas[i].chunk->stride);
         }
 
-      use_modifiers = self->format.info.raw.modifier != DRM_FORMAT_MOD_INVALID;
-
       g_clear_object (&self->paintable);
-      self->paintable = import_dmabuf_egl (self->gl_context,
-                                           drm_format,
-                                           self->format.info.raw.size.width,
-                                           self->format.info.raw.size.height,
-                                           n_datas,
-                                           fds,
-                                           strides,
-                                           offsets,
-                                           use_modifiers ? modifiers : NULL);
+      self->paintable = GDK_PAINTABLE (gdk_dmabuf_texture_builder_build (builder, NULL, NULL, &error));
+      g_clear_object (&builder);
 
       if (!self->paintable)
         {
+          g_warning ("%s", error->message);
+          g_error_free (error);
+
           remove_modifier_from_format (self,
                                        self->format.info.raw.format,
                                        self->format.info.raw.modifier);

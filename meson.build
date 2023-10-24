@@ -8,7 +8,6 @@ project(
 gnome = import('gnome')
 
 sources = [
-  'dmabuf-import.c',
   'pw-media-stream.c',
   'window.c',
   'main.c',
