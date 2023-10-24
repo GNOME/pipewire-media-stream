@@ -1236,7 +1236,7 @@ pw_media_stream_class_init (PwMediaStreamClass *klass)
 
   properties[PROP_NODE_ID] =
     g_param_spec_uint ("node-id", "", "",
-                       0, G_MAXINT, 0,
+                       0, G_MAXUINT, 0,
                        G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (object_class, N_PROPS, properties);
