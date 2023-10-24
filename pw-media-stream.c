@@ -137,8 +137,13 @@ static const struct {
 } supported_formats[] = {
   { SPA_VIDEO_FORMAT_BGRA, DRM_FORMAT_ARGB8888, GDK_MEMORY_B8G8R8A8, 4, "ARGB8888", },
   { SPA_VIDEO_FORMAT_RGBA, DRM_FORMAT_ABGR8888, GDK_MEMORY_R8G8B8A8, 4, "ABGR8888", },
-  { SPA_VIDEO_FORMAT_BGRx, DRM_FORMAT_XRGB8888, GDK_MEMORY_B8G8R8A8, 4, "XRGB8888", },
-  { SPA_VIDEO_FORMAT_RGBx, DRM_FORMAT_XBGR8888, GDK_MEMORY_R8G8B8A8, 4, "XBGR8888", },
+  { SPA_VIDEO_FORMAT_ARGB, DRM_FORMAT_BGRA8888, GDK_MEMORY_A8R8G8B8, 4, "BGRA8888", },
+  { SPA_VIDEO_FORMAT_ABGR, DRM_FORMAT_RGBA8888, GDK_MEMORY_A8B8G8R8, 4, "RGBA8888", },
+  { SPA_VIDEO_FORMAT_BGRx, DRM_FORMAT_XRGB8888, GDK_MEMORY_B8G8R8X8, 4, "XRGB8888", },
+  { SPA_VIDEO_FORMAT_RGBx, DRM_FORMAT_XBGR8888, GDK_MEMORY_R8G8B8X8, 4, "XBGR8888", },
+  { SPA_VIDEO_FORMAT_xRGB, DRM_FORMAT_BGRX8888, GDK_MEMORY_X8R8G8B8, 4, "RGBX8888", },
+  { SPA_VIDEO_FORMAT_xBGR, DRM_FORMAT_RGBX8888, GDK_MEMORY_X8R8G8B8, 4, "XRGB8888", },
+  { SPA_VIDEO_FORMAT_YUY2, DRM_FORMAT_YUYV,     GDK_MEMORY_R8G8B8,   0, "YUYV",     },
 };
 
 static gboolean
@@ -150,7 +155,8 @@ spa_pixel_format_to_gdk_memory_format (uint32_t         spa_format,
 
   for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
     {
-      if (supported_formats[i].spa_format != spa_format)
+      if (supported_formats[i].spa_format != spa_format ||
+          supported_formats[i].bpp == 0)
         continue;
 
       *out_format = supported_formats[i].gdk_format;
@@ -196,6 +202,9 @@ query_modifiers_for_format (uint32_t drm_format)
       if (fmt == drm_format)
         g_array_append_val (modifiers, mod);
     }
+
+  mod = DRM_FORMAT_MOD_INVALID;
+  g_array_append_val (modifiers, mod);
 
   return g_steal_pointer (&modifiers);
 }
