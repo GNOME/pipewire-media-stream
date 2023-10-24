@@ -1,10 +1,6 @@
 #include "pw-media-stream.h"
 
-#include "dmabuf-import.h"
-
 #include <drm/drm_fourcc.h>
-#include <epoxy/egl.h>
-#include <epoxy/gl.h>
 #include <fcntl.h>
 #include <gtk/gtk.h>
 #include <pipewire/pipewire.h>
@@ -183,64 +179,23 @@ spa_pixel_format_to_drm_format (uint32_t  spa_format,
   return FALSE;
 }
 
-static EGLDisplay
-get_egl_display_from_gl_context (GdkGLContext *gl_context)
-{
-  GdkDisplay *display;
-  EGLDisplay egl_display;
-
-  display = gdk_gl_context_get_display (gl_context);
-  egl_display = EGL_NO_DISPLAY;
-
-#ifdef GDK_WINDOWING_WAYLAND
-  if (GDK_IS_WAYLAND_DISPLAY (display))
-    egl_display = gdk_wayland_display_get_egl_display (display);
-#endif
-#ifdef GDK_WINDOWING_X11
-  if (GDK_IS_X11_DISPLAY (display))
-    egl_display = gdk_x11_display_get_egl_display (display);
-#endif
-
-  return egl_display;
-}
-
-static inline gboolean
-find_drm_format (uint32_t  drm_format,
-                 EGLint   *formats,
-                 EGLint    n_formats)
-{
-  size_t i;
-
-  for (i = 0; i < n_formats; i++)
-    {
-      if (formats[i] == drm_format)
-        return TRUE;
-    }
-
-  return FALSE;
-}
-
 static GArray *
-query_modifiers_for_format (EGLDisplay egl_display,
-                            uint32_t   drm_format)
+query_modifiers_for_format (uint32_t drm_format)
 {
+  GdkDmabufFormats *formats;
   g_autoptr (GArray) modifiers = NULL;
-  EGLuint64KHR implicit_modifier;
-  EGLint n_modifiers;
+  uint32_t fmt;
+  uint64_t mod;
 
-  eglQueryDmaBufModifiersEXT (egl_display, drm_format, 0, NULL, NULL, &n_modifiers);
+  formats = gdk_display_get_dmabuf_formats (gdk_display_get_default ());
 
-  modifiers = g_array_sized_new (FALSE, FALSE, sizeof (EGLuint64KHR), n_modifiers + 1);
-  eglQueryDmaBufModifiersEXT (egl_display,
-                              drm_format,
-                              n_modifiers,
-                              (EGLuint64KHR *)modifiers->data,
-                              NULL,
-                              &n_modifiers);
-
-  /* FIXME: assume we always support implicit modifiers for now */
-  implicit_modifier = DRM_FORMAT_MOD_INVALID;
-  g_array_append_val (modifiers, implicit_modifier);
+  modifiers = g_array_new (FALSE, FALSE, sizeof (uint64_t));
+  for (size_t i = 0; i < gdk_dmabuf_formats_get_n_formats (formats); i++)
+    {
+      gdk_dmabuf_formats_get_format (formats, i, &fmt, &mod);
+      if (fmt == drm_format)
+        g_array_append_val (modifiers, mod);
+    }
 
   return g_steal_pointer (&modifiers);
 }
@@ -254,36 +209,31 @@ clear_format_func (PmsFormat *format)
 static void
 query_formats_and_modifiers (PwMediaStream *self)
 {
-  g_autofree EGLint *egl_formats = NULL;
-  EGLDisplay egl_display;
-  EGLint n_egl_formats;
   size_t i;
 
   g_assert (self->gl_context != NULL);
 
-  egl_display = get_egl_display_from_gl_context (self->gl_context);
-  eglQueryDmaBufFormatsEXT (egl_display, 0, NULL, &n_egl_formats);
-
-  egl_formats = g_new (EGLint, n_egl_formats);
-  eglQueryDmaBufFormatsEXT (egl_display, n_egl_formats, egl_formats, &n_egl_formats);
-
   g_clear_pointer (&self->formats, g_array_unref);
-  self->formats = g_array_sized_new (FALSE, FALSE, sizeof (PmsFormat), n_egl_formats);
+  self->formats = g_array_new (FALSE, FALSE, sizeof (PmsFormat));
   g_array_set_clear_func (self->formats, (GDestroyNotify) clear_format_func);
 
   for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
     {
       PmsFormat format;
+      GArray *modifiers;
 
-      if (!find_drm_format (supported_formats[i].drm_format, egl_formats, n_egl_formats))
-        continue;
+      modifiers = query_modifiers_for_format (supported_formats[i].drm_format);
+      if (modifiers->len == 0)
+        {
+          g_array_unref (modifiers);
+          continue;
+        }
 
       format.spa_format = supported_formats[i].spa_format;
       format.drm_format = supported_formats[i].drm_format;
-      format.modifiers = query_modifiers_for_format (egl_display,
-                                                     supported_formats[i].drm_format);
+      format.modifiers = modifiers;
 
-      g_debug ("EGLDisplay supports format %s (%u modifiers)",
+      g_debug ("Display supports format %s (%u modifiers)",
                supported_formats[i].name,
                format.modifiers->len);
 
@@ -481,13 +431,8 @@ on_process_cb (void *user_data)
 
   if (buffer->datas[0].type == SPA_DATA_DmaBuf)
     {
-      gboolean use_modifiers;
-      uint32_t *offsets;
-      uint32_t *strides;
-      uint64_t *modifiers;
-      uint32_t n_datas;
-      unsigned int i;
-      int *fds;
+      GdkDmabufTextureBuilder *builder;
+      GError *error = NULL;
 
       g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, modifier:%#lx",
                buffer->datas[0].fd, buffer->datas[0].chunk->stride,
@@ -504,35 +449,30 @@ on_process_cb (void *user_data)
 
       g_debug ("DMA buffer format: %.4s", (char *) &drm_format);
 
-      n_datas = buffer->n_datas;
-      fds = g_alloca (sizeof (int) * n_datas);
-      offsets = g_alloca (sizeof (uint32_t) * n_datas);
-      strides = g_alloca (sizeof (uint32_t) * n_datas);
-      modifiers = g_alloca (sizeof (uint64_t) * n_datas);
+      builder = gdk_dmabuf_texture_builder_new ();
+      gdk_dmabuf_texture_builder_set_display (builder, gdk_display_get_default ());
+      gdk_dmabuf_texture_builder_set_width (builder, self->format.info.raw.size.width);
+      gdk_dmabuf_texture_builder_set_height (builder, self->format.info.raw.size.height);
+      gdk_dmabuf_texture_builder_set_fourcc (builder, drm_format);
+      gdk_dmabuf_texture_builder_set_modifier (builder, self->format.info.raw.modifier);
+      gdk_dmabuf_texture_builder_set_n_planes (builder, buffer->n_datas);
 
-      for (i = 0; i < n_datas; i++)
+      for (gsize i = 0; i < buffer->n_datas; i++)
         {
-          fds[i] = buffer->datas[i].fd;
-          offsets[i] = buffer->datas[i].chunk->offset;
-          strides[i] = buffer->datas[i].chunk->stride;
-          modifiers[i] = self->format.info.raw.modifier;
+          gdk_dmabuf_texture_builder_set_fd (builder, i, buffer->datas[i].fd);
+          gdk_dmabuf_texture_builder_set_offset (builder, i, buffer->datas[i].chunk->offset);
+          gdk_dmabuf_texture_builder_set_stride (builder, i, buffer->datas[i].chunk->stride);
         }
 
-      use_modifiers = self->format.info.raw.modifier != DRM_FORMAT_MOD_INVALID;
-
       g_clear_object (&self->paintable);
-      self->paintable = import_dmabuf_egl (self->gl_context,
-                                           drm_format,
-                                           self->format.info.raw.size.width,
-                                           self->format.info.raw.size.height,
-                                           n_datas,
-                                           fds,
-                                           strides,
-                                           offsets,
-                                           use_modifiers ? modifiers : NULL);
+      self->paintable = GDK_PAINTABLE (gdk_dmabuf_texture_builder_build (builder, NULL, NULL, &error));
+      g_clear_object (&builder);
 
       if (!self->paintable)
         {
+          g_warning ("%s", error->message);
+          g_error_free (error);
+
           remove_modifier_from_format (self,
                                        self->format.info.raw.format,
                                        self->format.info.raw.modifier);
