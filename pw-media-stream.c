@@ -197,6 +197,9 @@ query_modifiers_for_format (uint32_t drm_format)
         g_array_append_val (modifiers, mod);
     }
 
+  mod = DRM_FORMAT_MOD_INVALID;
+  g_array_append_val (modifiers, mod);
+
   return g_steal_pointer (&modifiers);
 }
 
