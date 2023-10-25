@@ -446,6 +446,15 @@ on_process_cb (void *user_data)
     }
 
   buffer = b->buffer;
+  header = spa_buffer_find_meta_data (buffer, SPA_META_Header, sizeof (*header));
+
+  if (header && (header->flags & SPA_META_HEADER_FLAG_CORRUPTED) > 0)
+    {
+      g_warning ("Buffer is corrupt");
+      pw_stream_queue_buffer (self->stream, b);
+      return;
+    }
+
   has_buffer = buffer->datas[0].chunk->size != 0;
   size_changed = FALSE;
   invalidated = FALSE;
@@ -626,7 +635,6 @@ read_metadata:
                self->cursor.hotspot_y);
     }
 
-  header = spa_buffer_find_meta_data (buffer, SPA_META_Header, sizeof (*header));
   gtk_media_stream_update (GTK_MEDIA_STREAM (self), header ? header->pts : 0);
 
   if (size_changed)
