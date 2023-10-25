@@ -289,6 +289,7 @@ build_format_param (PwMediaStream          *self,
                     gboolean                build_modifiers)
 {
   struct spa_pod_frame object_frame;
+  struct spa_pod *result;
 
   spa_pod_builder_push_object (builder, &object_frame, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
   spa_pod_builder_add (builder, SPA_FORMAT_mediaType, SPA_POD_Id (SPA_MEDIA_TYPE_video), 0);
@@ -308,7 +309,8 @@ build_format_param (PwMediaStream          *self,
       spa_pod_builder_long (builder, g_array_index (format->modifiers, uint64_t, 0));
       for (i = 0; i < format->modifiers->len; i++)
         spa_pod_builder_long (builder, g_array_index (format->modifiers, uint64_t, i));
-      spa_pod_builder_pop (builder, &modifiers_frame);
+      if (spa_pod_builder_pop (builder, &modifiers_frame) == NULL)
+        g_warning ("Ran out of POD space");
     }
 
   spa_pod_builder_add (builder,
@@ -318,7 +320,11 @@ build_format_param (PwMediaStream          *self,
                                                        &SPA_RECTANGLE(8192, 4320)),
                        0);
 
-  return spa_pod_builder_pop (builder, &object_frame);
+  result = spa_pod_builder_pop (builder, &object_frame);
+  if (result == NULL)
+    g_warning ("Ran out of POD space");
+
+  return result;
 }
 
 static GPtrArray *
@@ -352,7 +358,7 @@ renegotiate_stream_format (void     *user_data,
   g_autoptr (GPtrArray) new_params = NULL;
   struct spa_pod_builder builder;
   PwMediaStream *self = user_data;
-  uint8_t params_buffer[2048];
+  uint8_t params_buffer[16 * 1024];
 
   builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
   new_params = build_stream_format_params (self, &builder);
@@ -367,7 +373,7 @@ connect_stream (PwMediaStream *self)
 {
   g_autoptr (GPtrArray) params = NULL;
   struct spa_pod_builder builder;
-  uint8_t params_buffer[2048];
+  uint8_t params_buffer[16 * 1024];
   int result;
 
   g_assert (self->gl_context != NULL);
