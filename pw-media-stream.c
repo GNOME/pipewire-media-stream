@@ -455,8 +455,8 @@ on_process_cb (void *user_data)
 
   if (buffer->datas[0].type == SPA_DATA_DmaBuf)
     {
-      GdkDmabufTextureBuilder *builder;
-      GError *error = NULL;
+      g_autoptr(GdkDmabufTextureBuilder) builder = NULL;
+      g_autoptr(GError) error = NULL;
 
       g_debug ("DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d, modifier:%#lx",
                buffer->datas[0].fd, buffer->datas[0].chunk->stride,
@@ -490,12 +490,10 @@ on_process_cb (void *user_data)
 
       g_clear_object (&self->paintable);
       self->paintable = GDK_PAINTABLE (gdk_dmabuf_texture_builder_build (builder, NULL, NULL, &error));
-      g_clear_object (&builder);
 
       if (!self->paintable)
         {
           g_warning ("%s", error->message);
-          g_error_free (error);
 
           remove_modifier_from_format (self,
                                        self->format.info.raw.format,
