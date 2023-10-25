@@ -38,8 +38,6 @@ command_line (GApplication            *app,
   g_variant_dict_lookup (options, "screencast", "b", &screencast);
   g_variant_dict_lookup (options, "camera", "b", &camera);
 
-  g_print ("screencast: %d\n", screencast);
-
   if (screencast)
     initial = PMS_WINDOW_INITIAL_STATE_SCREENCAST;
   else if (camera)
