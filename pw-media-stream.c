@@ -576,6 +576,9 @@ read_metadata:
       if (cursor->bitmap_offset)
         bitmap = SPA_MEMBER (cursor, cursor->bitmap_offset, struct spa_meta_bitmap);
 
+      if (bitmap)
+        g_clear_object (&self->cursor.paintable);
+
       if (bitmap &&
           bitmap->size.width > 0 &&
           bitmap->size.height > 0 &&
@@ -592,6 +595,8 @@ read_metadata:
           self->cursor.height = bitmap->size.height;
           self->cursor.hotspot_x = cursor->hotspot.x;
           self->cursor.hotspot_y = cursor->hotspot.y;
+
+          g_assert (self->cursor.paintable == NULL);
 
           bytes = g_bytes_new (bitmap_data,
                                bitmap->size.width * bitmap->size.height * bpp);
