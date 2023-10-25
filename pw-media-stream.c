@@ -358,7 +358,7 @@ renegotiate_stream_format (void     *user_data,
   g_autoptr (GPtrArray) new_params = NULL;
   struct spa_pod_builder builder;
   PwMediaStream *self = user_data;
-  uint8_t params_buffer[2048];
+  uint8_t params_buffer[16 * 1024];
 
   builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
   new_params = build_stream_format_params (self, &builder);
@@ -373,7 +373,7 @@ connect_stream (PwMediaStream *self)
 {
   g_autoptr (GPtrArray) params = NULL;
   struct spa_pod_builder builder;
-  uint8_t params_buffer[2048];
+  uint8_t params_buffer[16 * 1024];
   int result;
 
   g_assert (self->gl_context != NULL);
