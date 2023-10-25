@@ -16,6 +16,8 @@ struct _PmsWindow
   GCancellable *cancellable;
   XdpPortal *portal;
   XdpSession *session;
+
+  PmsWindowInitialState initial;
 };
 
 G_DEFINE_TYPE (PmsWindow, pms_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -81,7 +83,7 @@ on_screencast_started (GObject      *source,
   g_autoptr (GtkMediaStream) media_stream = NULL;
   g_autoptr (GVariant) stream_properties = NULL;
   g_autoptr (GError) error = NULL;
-	GVariantIter iter;
+  GVariantIter iter;
   PmsWindow *self;
   GVariant *streams;
   uint32_t node_id;
@@ -100,8 +102,8 @@ on_screencast_started (GObject      *source,
   fd = xdp_session_open_pipewire_remote (self->session);
   streams = xdp_session_get_streams (self->session);
 
-	g_variant_iter_init (&iter, streams);
-	g_variant_iter_loop (&iter, "(u@a{sv})", &node_id, &stream_properties);
+  g_variant_iter_init (&iter, streams);
+  g_variant_iter_loop (&iter, "(u@a{sv})", &node_id, &stream_properties);
 
   media_stream = pw_media_stream_new (fd, node_id, &error);
   gtk_video_set_media_stream (self->video, media_stream);
@@ -193,6 +195,25 @@ pms_window_dispose (GObject *object)
 }
 
 static void
+pms_window_set_property (GObject      *object,
+                         guint         property_id,
+                         const GValue *value,
+                         GParamSpec   *pspec)
+{
+  PmsWindow *self = PMS_WINDOW (object);
+
+  switch (property_id)
+    {
+    case 1:
+      self->initial = g_value_get_uint (value);
+      g_print ("set initial to %u\n", self->initial);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+    }
+}
+
+static void
 pms_window_class_init (PmsWindowClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
@@ -200,6 +221,8 @@ pms_window_class_init (PmsWindowClass *klass)
   GtkWindowClass *window_class = GTK_WINDOW_CLASS (klass);
 
   object_class->dispose = pms_window_dispose;
+
+  object_class->set_property = pms_window_set_property;
 
   window_class->close_request = pms_window_close_request;
 
@@ -209,6 +232,30 @@ pms_window_class_init (PmsWindowClass *klass)
   gtk_widget_class_bind_template_callback (widget_class, on_go_previous_button_clicked_cb);
   gtk_widget_class_bind_template_callback (widget_class, on_start_screencast_button_clicked_cb);
   gtk_widget_class_bind_template_callback (widget_class, on_select_webcam_button_clicked_cb);
+
+  g_object_class_install_property (object_class, 1,
+                                   g_param_spec_uint ("initial-state", "", "",
+                                                      0, G_MAXUINT, 0,
+                                                      G_PARAM_WRITABLE | G_PARAM_CONSTRUCT_ONLY));
+}
+
+static void
+handle_initial_state (gpointer data)
+{
+  PmsWindow *window = PMS_WINDOW (data);
+
+  switch (window->initial)
+    {
+    case PMS_WINDOW_INITIAL_STATE_SCREENCAST:
+      on_start_screencast_button_clicked_cb (NULL, window);
+      break;
+    case PMS_WINDOW_INITIAL_STATE_CAMERA:
+      on_select_webcam_button_clicked_cb (NULL, window);
+      break;
+    case PMS_WINDOW_INITIAL_STATE_EMPTY:
+    default:
+      break;
+    }
 }
 
 static void
@@ -218,4 +265,6 @@ pms_window_init (PmsWindow *self)
 
   self->portal = xdp_portal_new ();
   self->cancellable = g_cancellable_new ();
+
+  g_idle_add_once (handle_initial_state, self);
 }
