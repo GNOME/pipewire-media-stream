@@ -206,7 +206,6 @@ pms_window_set_property (GObject      *object,
     {
     case 1:
       self->initial = g_value_get_uint (value);
-      g_print ("set initial to %u\n", self->initial);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
