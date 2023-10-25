@@ -186,15 +186,31 @@ spa_pixel_format_to_drm_format (uint32_t  spa_format,
   return FALSE;
 }
 
-static GArray *
-query_modifiers_for_format (uint32_t drm_format)
+static gboolean
+drm_format_is_supported (uint32_t  drm_format,
+                         size_t   *idx)
 {
-  GdkDmabufFormats *formats;
+  size_t i;
+
+  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
+    {
+      if (supported_formats[i].drm_format == drm_format)
+        {
+          *idx = i;
+          return TRUE;
+        }
+    }
+
+  return FALSE;
+}
+
+static GArray *
+query_modifiers_for_format (GdkDmabufFormats *formats,
+                            uint32_t          drm_format)
+{
   g_autoptr (GArray) modifiers = NULL;
   uint32_t fmt;
   uint64_t mod;
-
-  formats = gdk_display_get_dmabuf_formats (gdk_display_get_default ());
 
   modifiers = g_array_new (FALSE, FALSE, sizeof (uint64_t));
   for (size_t i = 0; i < gdk_dmabuf_formats_get_n_formats (formats); i++)
@@ -219,7 +235,16 @@ clear_format_func (PmsFormat *format)
 static void
 query_formats_and_modifiers (PwMediaStream *self)
 {
-  size_t i;
+  GdkDmabufFormats *formats;
+  size_t i, j;
+  gboolean *handled;
+  guint32 fmt;
+  guint64 mod;
+
+  formats = gdk_display_get_dmabuf_formats (gdk_display_get_default ());
+
+  handled = g_alloca (G_N_ELEMENTS (supported_formats) * sizeof (gboolean));
+  memset (handled, 0, G_N_ELEMENTS (supported_formats) * sizeof (gboolean));
 
   g_assert (self->gl_context != NULL);
 
@@ -227,27 +252,37 @@ query_formats_and_modifiers (PwMediaStream *self)
   self->formats = g_array_new (FALSE, FALSE, sizeof (PmsFormat));
   g_array_set_clear_func (self->formats, (GDestroyNotify) clear_format_func);
 
-  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
+  for (i = 0; i < gdk_dmabuf_formats_get_n_formats (formats); i++)
     {
-      PmsFormat format;
-      GArray *modifiers;
+      gdk_dmabuf_formats_get_format (formats, i, &fmt, &mod);
 
-      modifiers = query_modifiers_for_format (supported_formats[i].drm_format);
-      if (modifiers->len == 0)
+      if (drm_format_is_supported (fmt, &j) && !handled[j])
         {
+          GArray *modifiers;
+
+          handled[j] = TRUE;
+
+          modifiers = query_modifiers_for_format (formats, fmt);
+          if (modifiers->len > 0)
+            {
+              PmsFormat format;
+
+              format.spa_format = supported_formats[j].spa_format;
+              format.drm_format = supported_formats[j].drm_format;
+              format.modifiers = g_array_ref (modifiers);
+
+              g_debug ("Display supports format %s (%u modifiers)",
+                       supported_formats[j].name,
+                       format.modifiers->len);
+
+              g_array_append_val (self->formats, format);
+            }
+
           g_array_unref (modifiers);
-          continue;
         }
 
-      format.spa_format = supported_formats[i].spa_format;
-      format.drm_format = supported_formats[i].drm_format;
-      format.modifiers = modifiers;
-
-      g_debug ("Display supports format %s (%u modifiers)",
-               supported_formats[i].name,
-               format.modifiers->len);
-
-      g_array_append_val (self->formats, format);
+      if (self->formats->len == G_N_ELEMENTS (supported_formats))
+        break;
     }
 }
 
