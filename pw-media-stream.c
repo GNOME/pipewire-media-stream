@@ -8,6 +8,7 @@
 #include <spa/debug/types.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/utils/result.h>
+#include <spa/pod/dynamic.h>
 
 #ifdef GDK_WINDOWING_X11
 #include <gdk/x11/gdkx.h>
@@ -356,24 +357,26 @@ renegotiate_stream_format (void     *user_data,
                            uint64_t  expirations)
 {
   g_autoptr (GPtrArray) new_params = NULL;
-  struct spa_pod_builder builder;
+  struct spa_pod_dynamic_builder builder;
   PwMediaStream *self = user_data;
-  uint8_t params_buffer[16 * 1024];
+  uint8_t params_buffer[4096];
 
-  builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
-  new_params = build_stream_format_params (self, &builder);
+  spa_pod_dynamic_builder_init (&builder, params_buffer, sizeof (params_buffer), 4096);
+  new_params = build_stream_format_params (self, (struct spa_pod_builder *) &builder);
 
   pw_stream_update_params (self->stream,
                            (const struct spa_pod **)new_params->pdata,
                            new_params->len);
+
+  spa_pod_dynamic_builder_clean (&builder);
 }
 
 static void
 connect_stream (PwMediaStream *self)
 {
   g_autoptr (GPtrArray) params = NULL;
-  struct spa_pod_builder builder;
-  uint8_t params_buffer[16 * 1024];
+  struct spa_pod_dynamic_builder builder;
+  uint8_t params_buffer[4096];
   int result;
 
   g_assert (self->gl_context != NULL);
@@ -381,8 +384,8 @@ connect_stream (PwMediaStream *self)
   if (self->connected)
     return;
 
-  builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof(params_buffer));
-  params = build_stream_format_params (self, &builder);
+  spa_pod_dynamic_builder_init (&builder, params_buffer, sizeof (params_buffer), 4096);
+  params = build_stream_format_params (self, (struct spa_pod_builder *) &builder);
 
   result = pw_stream_connect (self->stream,
                               PW_DIRECTION_INPUT,
@@ -390,6 +393,8 @@ connect_stream (PwMediaStream *self)
                               PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
                               (const struct spa_pod **)params->pdata,
                               params->len);
+
+  spa_pod_dynamic_builder_clean (&builder);
 
   if (result != 0)
     g_warning ("Could not connect: %s", spa_strerror (result));
