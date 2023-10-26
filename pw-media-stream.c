@@ -16,6 +16,8 @@
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/wayland/gdkwayland.h>
 #endif
+#include <wayland-client-protocol.h>
+#include "linux-dmabuf-unstable-v1-client-protocol.h"
 
 #define CURSOR_META_SIZE(width, height) \
   (sizeof (struct spa_meta_cursor) + \
@@ -42,6 +44,11 @@ typedef struct
   PwMediaStream *media_stream;
   struct pw_loop *pipewire_loop;
 } PipeWireSource;
+
+typedef struct {
+  struct pw_buffer *pw_buffer;
+  struct wl_buffer *wl_buffer;
+} Buffers;
 
 struct _PwMediaStream
 {
@@ -83,6 +90,15 @@ struct _PwMediaStream
     double width, height;
     GdkPaintable *paintable;
   } cursor;
+
+
+  struct wl_surface *surface;
+  struct wl_subsurface *subsurface;
+  struct wl_subcompositor *subcompositor;
+  struct zwp_linux_dmabuf_v1 *linux_dmabuf;
+
+  GHashTable *params;
+  GArray *buffers;
 };
 
 enum
@@ -445,15 +461,156 @@ connect_stream (PwMediaStream *self)
 static void
 select_node (PwMediaStream *self)
 {
-  g_print ("in select node\n");
-
   self->node_id = 44;
   connect_stream (self);
 }
 
+static struct wl_buffer *
+get_wl_buffer (PwMediaStream    *self,
+               struct pw_buffer *pw_buffer)
+{
+  for (gsize i = 0; i < self->buffers->len; i++)
+    {
+      Buffers *b = &g_array_index (self->buffers, Buffers, i);
+
+      if (b->pw_buffer == pw_buffer)
+        return b->wl_buffer;
+    }
+
+  return NULL;
+}
+
+static struct pw_buffer *
+get_pw_buffer (PwMediaStream    *self,
+               struct wl_buffer *wl_buffer)
+{
+  for (gsize i = 0; i < self->buffers->len; i++)
+    {
+      Buffers *b = &g_array_index (self->buffers, Buffers, i);
+
+      if (b->wl_buffer == wl_buffer)
+        return b->pw_buffer;
+    }
+
+  return NULL;
+}
+
+static void
+buffer_release (void             *data,
+                struct wl_buffer *wl_buffer)
+{
+  PwMediaStream *self = data;
+  struct pw_buffer *pw_buffer = get_pw_buffer (self, wl_buffer);
+
+  pw_stream_queue_buffer (self->stream, pw_buffer);
+}
+
+static const struct wl_buffer_listener buffer_listener = {
+  buffer_release,
+};
+
+static void
+params_buffer_created (void *data,
+                       struct zwp_linux_buffer_params_v1 *params,
+                       struct wl_buffer *wl_buffer)
+{
+  PwMediaStream *self = data;
+  Buffers b;
+
+  b.pw_buffer = g_hash_table_lookup (self->params, params);
+  b.wl_buffer = wl_buffer;
+
+  /* Set the wl_buffer up for our use */
+  wl_buffer_add_listener (wl_buffer, &buffer_listener, self);
+  g_array_append_val (self->buffers, b);
+
+  /* Give the pw_buffer back to pipewire */
+  pw_stream_queue_buffer (self->stream, b.pw_buffer);
+
+  /* Drop the params */
+  g_hash_table_remove (self->params, params);
+  zwp_linux_buffer_params_v1_destroy (params);
+}
+
+static void
+params_buffer_failed (void *data,
+                      struct zwp_linux_buffer_params_v1 *params)
+{
+  PwMediaStream *self = data;
+  struct pw_buffer *pw_buffer;
+
+  pw_buffer = g_hash_table_lookup (self->params, params);
+
+  g_warning ("Creating wl_buffer for dmabuf failed");
+
+  /* Give the pw_buffer back to pipewire */
+  pw_stream_queue_buffer (self->stream, pw_buffer);
+
+  /* Drop the params */
+  g_hash_table_remove (self->params, params);
+  zwp_linux_buffer_params_v1_destroy (params);
+}
+
+static const struct zwp_linux_buffer_params_v1_listener params_listener = {
+  params_buffer_created,
+  params_buffer_failed,
+};
+
 /*
  * pw_stream
  */
+
+static void
+on_add_buffer (void             *user_data,
+               struct pw_buffer *b)
+{
+  PwMediaStream *self = user_data;
+  struct spa_buffer *buffer;
+  struct zwp_linux_buffer_params_v1 *params;
+  guint32 drm_format;
+
+  buffer = b->buffer;
+
+  if (buffer->datas[0].type != SPA_DATA_DmaBuf)
+    {
+      g_warning ("Ignoring non-dmabuf");
+      return;
+    }
+
+  if (!spa_pixel_format_to_drm_format (self->format.info.raw.format, &drm_format))
+    {
+      g_warning ("Unsupported DMA buffer format: %d", self->format.info.raw.format);
+      return;
+    }
+
+  if (self->params == NULL)
+    {
+      self->params = g_hash_table_new (NULL, NULL);
+      self->buffers = g_array_new (FALSE, FALSE, sizeof (Buffers));
+    }
+
+  params = zwp_linux_dmabuf_v1_create_params (self->linux_dmabuf);
+  g_hash_table_insert (self->params, params, b);
+
+  zwp_linux_buffer_params_v1_add_listener (params, &params_listener, self);
+
+  for (gsize i = 0; i < buffer->n_datas; i++)
+    {
+      zwp_linux_buffer_params_v1_add (params,
+                                      buffer->datas[i].fd,
+                                      i,
+                                      buffer->datas[i].chunk->offset,
+                                      buffer->datas[i].chunk->stride,
+                                      self->format.info.raw.modifier >> 32,
+                                      self->format.info.raw.modifier && 0xffffffff);
+    }
+
+  zwp_linux_buffer_params_v1_create (params,
+                                     self->format.info.raw.size.width,
+                                     self->format.info.raw.size.height,
+                                     drm_format,
+                                     0);
+}
 
 static void
 on_process_cb (void *user_data)
@@ -469,6 +626,7 @@ on_process_cb (void *user_data)
   gboolean has_buffer;
   gboolean has_crop;
   uint32_t drm_format;
+  struct wl_buffer *wl_buffer;
 
   /* Find the most recent buffer */
   b = NULL;
@@ -478,8 +636,8 @@ on_process_cb (void *user_data)
 
       if (!aux)
         break;
-      if (b)
-        pw_stream_queue_buffer (self->stream, b);
+    //  if (b)
+    //    pw_stream_queue_buffer (self->stream, b);
       b = aux;
   }
 
@@ -526,6 +684,22 @@ on_process_cb (void *user_data)
 
       g_debug ("DMA buffer format: %.4s", (char *) &drm_format);
 
+      wl_buffer = get_wl_buffer (self, b);
+
+      if (wl_buffer == NULL)
+        {
+          pw_stream_queue_buffer (self->stream, b);
+       }
+     else
+       {
+          wl_surface_attach (self->surface, wl_buffer, 0, 0);
+          wl_surface_damage_buffer (self->surface, 0, 0,
+                                    self->format.info.raw.size.width,
+                                    self->format.info.raw.size.height);
+          wl_surface_commit (self->surface);
+       }
+
+#if 1
       builder = gdk_dmabuf_texture_builder_new ();
       gdk_dmabuf_texture_builder_set_display (builder, gdk_display_get_default ());
       gdk_dmabuf_texture_builder_set_width (builder, self->format.info.raw.size.width);
@@ -553,6 +727,7 @@ on_process_cb (void *user_data)
                                        self->format.info.raw.modifier);
           pw_loop_signal_event (self->source->pipewire_loop, self->renegotiate_event);
         }
+#endif
 
       invalidated = TRUE;
     }
@@ -686,7 +861,7 @@ read_metadata:
   if (invalidated)
     gdk_paintable_invalidate_contents (GDK_PAINTABLE (self));
 
-  pw_stream_queue_buffer (self->stream, b);
+  //pw_stream_queue_buffer (self->stream, b);
 }
 
 static void
@@ -787,6 +962,7 @@ static const struct pw_stream_events stream_events = {
   PW_VERSION_STREAM_EVENTS,
   .state_changed = on_state_changed_cb,
   .param_changed = on_param_changed_cb,
+  .add_buffer = on_add_buffer,
   .process = on_process_cb,
 };
 
@@ -1187,6 +1363,16 @@ pw_media_stream_realize (GtkMediaStream *media_stream,
       g_clear_object (&self->gl_context);
       return;
     }
+
+  self->subcompositor = gdk_wayland_display_get_wl_subcompositor (gdk_display_get_default ());
+  self->linux_dmabuf = gdk_wayland_display_get_linux_dmabuf (gdk_display_get_default ());
+
+  self->surface = wl_compositor_create_surface (gdk_wayland_display_get_wl_compositor (gdk_display_get_default ()));
+
+  self->subsurface =
+    wl_subcompositor_get_subsurface (self->subcompositor, self->surface, gdk_wayland_surface_get_wl_surface (surface));
+
+  wl_subsurface_set_position (self->subsurface, 40, 40);
 
   query_formats_and_modifiers (self);
 

@@ -11,12 +11,15 @@ sources = [
   'pw-media-stream.c',
   'window.c',
   'main.c',
+  'linux-dmabuf-unstable-v1-protocol.c'
 ]
 
 deps = [
   dependency('epoxy'),
   dependency('libadwaita-1'),
   dependency('libportal-gtk4'),
+  dependency('wayland-client'),
+  dependency('wayland-protocols'),
   dependency('libpipewire-0.3', version: '>= 0.3.40'),
   dependency('gtk4', version: '>= 4.2'),
 ]
