@@ -445,8 +445,6 @@ connect_stream (PwMediaStream *self)
 static void
 select_node (PwMediaStream *self)
 {
-  g_print ("in select node\n");
-
   self->node_id = 44;
   connect_stream (self);
 }
@@ -462,7 +460,6 @@ dmabuf_texture_destroy (gpointer data)
 {
   BufferData *bd = data;
 
-  g_print ("queue buffer\n");
   pw_stream_queue_buffer (bd->self->stream, bd->b);
   g_free (bd);
 }
