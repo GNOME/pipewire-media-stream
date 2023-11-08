@@ -89,6 +89,7 @@
             <property name="child">
               <object class="GtkVideo" id="video">
                 <property name="autoplay">true</property>
+                <property name="graphics-offload">enabled</property>
               </object>
             </property>
           </object>

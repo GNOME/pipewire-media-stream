@@ -445,10 +445,23 @@ connect_stream (PwMediaStream *self)
 static void
 select_node (PwMediaStream *self)
 {
-  g_print ("in select node\n");
-
   self->node_id = 44;
   connect_stream (self);
+}
+
+typedef struct
+{
+  PwMediaStream *self;
+  struct pw_buffer *b;
+} BufferData;
+
+static void
+dmabuf_texture_destroy (gpointer data)
+{
+  BufferData *bd = data;
+
+  pw_stream_queue_buffer (bd->self->stream, bd->b);
+  g_free (bd);
 }
 
 /*
@@ -541,8 +554,12 @@ on_process_cb (void *user_data)
           gdk_dmabuf_texture_builder_set_stride (builder, i, buffer->datas[i].chunk->stride);
         }
 
+      BufferData *bd = g_new0 (BufferData, 1);
+      bd->self = self;
+      bd->b = b;
+
       g_clear_object (&self->paintable);
-      self->paintable = GDK_PAINTABLE (gdk_dmabuf_texture_builder_build (builder, NULL, NULL, &error));
+      self->paintable = GDK_PAINTABLE (gdk_dmabuf_texture_builder_build (builder, dmabuf_texture_destroy, bd, &error));
 
       if (!self->paintable)
         {
@@ -583,6 +600,8 @@ on_process_cb (void *user_data)
                                         bytes,
                                         buffer->datas[0].chunk->stride);
       g_set_object (&self->paintable, GDK_PAINTABLE (texture));
+
+      pw_stream_queue_buffer (self->stream, b);
 
       invalidated = TRUE;
     }
@@ -685,8 +704,6 @@ read_metadata:
     gdk_paintable_invalidate_size (GDK_PAINTABLE (self));
   if (invalidated)
     gdk_paintable_invalidate_contents (GDK_PAINTABLE (self));
-
-  pw_stream_queue_buffer (self->stream, b);
 }
 
 static void
