@@ -18,7 +18,7 @@ deps = [
   dependency('libadwaita-1'),
   dependency('libportal-gtk4'),
   dependency('libpipewire-0.3', version: '>= 0.3.40'),
-  dependency('gtk4', version: '>= 4.2'),
+  dependency('gtk4', version: '>= 4.13'),
 ]
 
 sources += gnome.compile_resources(
