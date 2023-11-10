@@ -460,7 +460,8 @@ dmabuf_texture_destroy (gpointer data)
 {
   BufferData *bd = data;
 
-  pw_stream_queue_buffer (bd->self->stream, bd->b);
+  if (bd->self->stream)
+    pw_stream_queue_buffer (bd->self->stream, bd->b);
   g_free (bd);
 }
 
