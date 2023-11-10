@@ -1236,6 +1236,10 @@ pw_media_stream_dispose (GObject *object)
 {
   PwMediaStream *self = (PwMediaStream *)object;
 
+  g_clear_object (&self->paintable);
+  g_clear_object (&self->cursor.paintable);
+  g_clear_object (&self->gl_context);
+
   g_clear_pointer (&self->formats, g_array_unref);
 
   if (self->stream)
@@ -1249,10 +1253,6 @@ pw_media_stream_dispose (GObject *object)
       close (self->pipewire_fd);
       self->pipewire_fd = 0;
     }
-
-  g_clear_object (&self->paintable);
-  g_clear_object (&self->cursor.paintable);
-  g_clear_object (&self->gl_context);
 
   G_OBJECT_CLASS (pw_media_stream_parent_class)->dispose (object);
 }
