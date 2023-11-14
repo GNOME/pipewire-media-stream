@@ -87,9 +87,13 @@
           <object class="GtkStackPage" id="video_page">
             <property name="name">video</property>
             <property name="child">
-              <object class="GtkVideo" id="video">
-                <property name="autoplay">true</property>
-                <property name="graphics-offload">enabled</property>
+              <object class="GtkWindowHandle">
+                <property name="child">
+                  <object class="GtkVideo" id="video">
+                    <property name="autoplay">true</property>
+                    <property name="graphics-offload">enabled</property>
+                  </object>
+                </property>
               </object>
             </property>
           </object>
